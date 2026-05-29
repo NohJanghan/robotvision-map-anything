@@ -16,3 +16,4 @@ dependencies:
   - pillow
   - scikit-image
   - tqdm
+  - ffmpeg

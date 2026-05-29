@@ -3,6 +3,14 @@
 Generated reconstruction results, renders, metrics, and logs are excluded from Git.
 The placeholders in this directory document the expected experiment layout.
 
+COLMAP outputs:
+
+- `colmap/databases/<run-name>/database.db`: feature and match database
+- `colmap/exports/<run-name>/`: intermediate TXT export
+- `colmap/sparse/<run-name>/`: binary sparse reconstruction
+- `colmap/visualizations/<run-name>/`: PLY point cloud and trajectory plot
+- `colmap/logs/<run-name>/`: command logs, metrics, and run summary
+
 MapAnything configurations:
 
 - `config_a_uncalibrated_image_only`: raw RGB images only

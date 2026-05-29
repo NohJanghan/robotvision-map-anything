@@ -1,0 +1,15 @@
+{
+  "description": "Default Task 1 COLMAP settings for a single RGB video/image sequence.",
+  "camera_model": "SIMPLE_RADIAL",
+  "single_camera": true,
+  "use_gpu": true,
+  "max_num_features": 8192,
+  "matcher": "sequential",
+  "sequential_overlap": 10,
+  "loop_detection": false,
+  "mapper_min_num_matches": 15,
+  "outputs": {
+    "output_root": "outputs/colmap",
+    "export_root": "data/processed/colmap_exports"
+  }
+}

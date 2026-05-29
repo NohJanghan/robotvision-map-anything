@@ -44,6 +44,8 @@ conda install -c conda-forge colmap
 │       └── mapanything_inputs/
 ├── outputs/                  # Git으로 관리하지 않는 실험 산출물
 │   ├── colmap/
+│   │   ├── databases/
+│   │   ├── exports/
 │   │   ├── sparse/
 │   │   ├── visualizations/
 │   │   └── logs/
@@ -69,6 +71,28 @@ conda install -c conda-forge colmap
 
 Task 1의 목표는 이후 MapAnything 입력으로 활용할 카메라 내부 파라미터와 포즈를
 COLMAP으로 추정하는 것이다.
+
+MP4 영상을 사용하는 경우 먼저 COLMAP 입력 형식인 이미지 디렉토리로 변환한다.
+
+```bash
+conda activate rkv-mapanything
+python scripts/colmap/preprocess_video.py /path/to/scene.mp4 \
+  --output-dir data/raw/rgb_sequences/scene \
+  --fps 2 \
+  --max-side 1600
+```
+
+이후 COLMAP 파이프라인을 실행한다.
+
+```bash
+python scripts/colmap/run_pipeline.py \
+  --image-dir data/raw/rgb_sequences/scene \
+  --run-name scene
+```
+
+실행 결과는 `data/processed/colmap_exports/<run-name>/`의 `cameras.txt`,
+`images.txt`, `points3D.txt`와 `outputs/colmap/` 아래의 sparse model, PLY,
+camera trajectory plot, metrics/log 파일로 저장된다.
 
 수행 절차:
 

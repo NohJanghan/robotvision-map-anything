@@ -1,12 +1,69 @@
 # Robot Kinematics and Vision Term Project
 
-## Feed-Forward 3D Reconstruction with MapAnything
-
 ## 프로젝트 목표
 
 - RGB 이미지 시퀀스에 대해 COLMAP을 실행하여 카메라 내부 파라미터와 포즈를 추정한다.
 - MapAnything을 네 가지 입력 설정으로 실행하여 입력 정보의 차이가 3D 복원 결과에 미치는 영향을 분석한다.
-- 모바일 기기에서 ARKit 또는 ARCore를 사용하여 VIO pose를 얻고 이를 MapAnithing의 입력으로 사용한다.
+- 모바일 기기에서 ARKit 또는 ARCore를 사용하여 VIO pose를 얻고 이를 MapAnything의 입력으로 사용한다.
+
+## Environment Settings
+
+```bash
+conda env create -f environment.yml
+conda activate rkv-mapanything
+```
+
+Map-Anything 설치를 위해서
+```bash
+conda activate rkv-mapanything
+git clone https://github.com/facebookresearch/map-anything.git ./third_party/map-anything
+cd third_party/map-anything
+pip install -e .
+```
+
+COLMAP 설치를 위해서
+```bash
+conda activate rkv-mapanything
+conda install -c conda-forge colmap
+```
+
+
+## 디렉토리 구조
+
+```text
+.
+├── configs/                  # COLMAP / MapAnything 실행 설정
+│   ├── colmap/
+│   └── mapanything/
+├── data/                     # Git으로 관리하지 않는 로컬 데이터
+│   ├── raw/
+│   │   ├── rgb_sequences/    # 원본 RGB 이미지 시퀀스
+│   │   └── ar_captures/      # 선택 과제용 ARKit/ARCore 캡처
+│   └── processed/
+│       ├── colmap_exports/   # cameras.txt, images.txt, points3D.txt
+│       └── mapanything_inputs/
+├── outputs/                  # Git으로 관리하지 않는 실험 산출물
+│   ├── colmap/
+│   │   ├── sparse/
+│   │   ├── visualizations/
+│   │   └── logs/
+│   └── mapanything/
+│       ├── config_a_uncalibrated_image_only/
+│       ├── config_b_calibrated_image_only/
+│       ├── config_c_calibrated_colmap_poses/
+│       └── config_d_calibrated_ar_poses/
+├── scripts/                  # COLMAP, MapAnything, 평가 자동화 스크립트
+│   ├── colmap/
+│   ├── mapanything/
+│   ├── evaluation/
+│   └── utils/
+└── third_party/
+    └── map-anything/         # facebookresearch/map-anything 로컬 체크아웃
+```
+
+`data/`, `outputs/`, `third_party/map-anything/`의 실제 내용물은 Git에서 제외한다.
+대신 `.gitkeep`과 README 파일만 남겨 필요한 디렉토리 구조를 보이게 한다. 보고서는
+코드 및 대용량 산출물과 분리해 `reports/` 아래에서 관리한다.
 
 ## Task 1: COLMAP 기반 Classical SfM
 

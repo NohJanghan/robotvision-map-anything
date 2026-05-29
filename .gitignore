@@ -1,0 +1,24 @@
+# OS/editor noise
+.DS_Store
+.vscode/
+.idea/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local datasets are not versioned. Keep only directory placeholders.
+/data/**
+!/data/**/
+!/data/**/.gitkeep
+!/data/README.md
+
+# Generated experiment outputs can be large. Keep only directory placeholders.
+/outputs/**
+!/outputs/**/
+!/outputs/**/.gitkeep
+!/outputs/README.md
+
+# External checkout. Keep MapAnything as a local third-party dependency here.
+/third_party/map-anything/

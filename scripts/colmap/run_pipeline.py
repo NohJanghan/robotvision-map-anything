@@ -113,6 +113,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--use-xvfb",
+        action="store_true",
+        help=(
+            "Run COLMAP commands through xvfb-run. Useful when GPU SIFT needs an "
+            "X display in a headless terminal."
+        ),
+    )
+    parser.add_argument(
+        "--xvfb-run",
+        default="xvfb-run",
+        help="xvfb-run executable path or command name. Default: xvfb-run.",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Remove this run's generated database/model/export directories first.",
@@ -140,15 +153,14 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
-def require_tool(command: str) -> str:
+def require_tool(command: str, install_hint: str | None = None) -> str:
     if Path(command).exists():
         return command
     path = shutil.which(command)
     if path is None:
-        fail(
-            f"'{command}' was not found on PATH. Activate rkv-mapanything and "
-            "install COLMAP, e.g. `conda install -c conda-forge colmap`."
-        )
+        if install_hint is None:
+            install_hint = "Install it and ensure it is available on PATH."
+        fail(f"'{command}' was not found on PATH. {install_hint}")
     return path
 
 
@@ -158,11 +170,24 @@ def list_images(image_dir: Path) -> list[Path]:
     )
 
 
-def colmap_environment(qt_qpa_platform: str | None) -> dict[str, str]:
+def colmap_environment(qt_qpa_platform: str | None, use_xvfb: bool) -> dict[str, str]:
     env = os.environ.copy()
+    if use_xvfb and qt_qpa_platform == "offscreen":
+        env.pop("QT_QPA_PLATFORM", None)
+        return env
     if qt_qpa_platform:
         env["QT_QPA_PLATFORM"] = qt_qpa_platform
     return env
+
+
+def xvfb_command_prefix(args: argparse.Namespace) -> list[str]:
+    if not args.use_xvfb:
+        return []
+    xvfb_run = require_tool(
+        args.xvfb_run,
+        "Install Xvfb, e.g. `sudo apt install xvfb`, or pass --xvfb-run /path/to/xvfb-run.",
+    )
+    return [xvfb_run, "-a"]
 
 
 def run_command(command: list[str], log_file: Path, env: dict[str, str]) -> str:
@@ -358,6 +383,8 @@ def write_run_summary(
             "loop_detection": args.loop_detection,
             "mapper_min_num_matches": args.mapper_min_num_matches,
             "qt_qpa_platform": args.qt_qpa_platform,
+            "use_xvfb": args.use_xvfb,
+            "xvfb_run": args.xvfb_run,
         },
         "paths": {key: str(value.resolve()) for key, value in paths.items()},
         "metrics": metrics,
@@ -388,7 +415,12 @@ def validate_args(args: argparse.Namespace) -> list[Path]:
 def main() -> None:
     args = parse_args()
     images = validate_args(args)
-    colmap = require_tool(args.colmap)
+    colmap = require_tool(
+        args.colmap,
+        "Activate rkv-mapanything and install COLMAP, e.g. "
+        "`conda install -c conda-forge colmap`.",
+    )
+    xvfb_prefix = xvfb_command_prefix(args)
 
     output_root = args.output_root
     run_name = args.run_name
@@ -415,11 +447,12 @@ def main() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
     commands: list[str] = []
-    env = colmap_environment(args.qt_qpa_platform)
+    env = colmap_environment(args.qt_qpa_platform, args.use_xvfb)
 
     def run(command: list[str], log_name: str) -> str:
-        commands.append(" ".join(command))
-        return run_command(command, log_dir / log_name, env)
+        full_command = [*xvfb_prefix, *command]
+        commands.append(" ".join(full_command))
+        return run_command(full_command, log_dir / log_name, env)
 
     if not args.skip_features:
         feature_command = [

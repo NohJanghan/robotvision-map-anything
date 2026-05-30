@@ -17,3 +17,4 @@ dependencies:
   - scikit-image
   - tqdm
   - ffmpeg
+  - pip

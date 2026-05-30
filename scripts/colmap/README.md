@@ -50,6 +50,22 @@ When running over SSH or on a headless server, the script sets
 does not try to open an X display. If your COLMAP build needs a different
 backend, pass `--qt-qpa-platform minimal`.
 
+If GPU SIFT fails with an OpenGL context error on a headless machine, run the
+COLMAP commands through `xvfb-run`:
+
+```bash
+python scripts/colmap/run_pipeline.py \
+  --image-dir data/raw/rgb_sequences/scene \
+  --run-name scene \
+  --overwrite \
+  --use-gpu 1 \
+  --use-xvfb
+```
+
+The `--use-xvfb` option removes the default `QT_QPA_PLATFORM=offscreen` setting
+for COLMAP subprocesses so the temporary X display created by `xvfb-run` can be
+used.
+
 For unordered image collections instead of video frames, use exhaustive
 matching:
 

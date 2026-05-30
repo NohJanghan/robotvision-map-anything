@@ -1,0 +1,113 @@
+{
+  "run_name": "scene",
+  "image_dir": "data/raw/rgb_sequences/scene",
+  "colmap_export_dir": "data/processed/colmap_exports/scene",
+  "ar_pose_file": "data/raw/ar_captures/scene/poses.json",
+  "input_root": "data/processed/mapanything_inputs",
+  "output_root": "outputs/mapanything",
+  "continue_on_error": false,
+  "model": {
+    "name": "facebook/map-anything",
+    "apache": false
+  },
+  "view_selection": {
+    "mode": "registered_or_all",
+    "start": 0,
+    "stride": 1,
+    "max_images": null
+  },
+  "preprocess": {
+    "resize_mode": "fixed_mapping",
+    "size": null,
+    "norm_type": "dinov2",
+    "patch_size": 14,
+    "resolution_set": 518,
+    "verbose": false
+  },
+  "inference": {
+    "memory_efficient_inference": true,
+    "minibatch_size": 1,
+    "use_amp": true,
+    "amp_dtype": "bf16",
+    "apply_mask": true,
+    "mask_edges": true,
+    "apply_confidence_mask": false,
+    "confidence_percentile": 10,
+    "use_multiview_confidence": false
+  },
+  "exports": {
+    "save_npz": true,
+    "save_dense_points_npz": false,
+    "save_depth_png": true,
+    "save_point_cloud_ply": true,
+    "point_cloud_stride": 4,
+    "point_cloud_max_points": 500000,
+    "save_glb": true,
+    "glb_as_mesh": true,
+    "save_colmap": false,
+    "skip_point2d": true,
+    "voxel_fraction": 0.01,
+    "voxel_size": null,
+    "continue_on_export_error": true
+  },
+  "evaluation": {
+    "enabled": true,
+    "reference_pose_source": "colmap",
+    "reference_intrinsics_source": "colmap",
+    "render": {
+      "enabled": true,
+      "pair_strategy": "adjacent",
+      "bidirectional": false,
+      "max_pairs": 8,
+      "point_stride": 2,
+      "min_coverage": 0.01,
+      "save_images": true
+    }
+  },
+  "configs": [
+    {
+      "id": "config_a",
+      "name": "config_a_uncalibrated_image_only",
+      "label": "Uncalibrated image-only",
+      "enabled": true,
+      "use_intrinsics": false,
+      "pose_source": "none",
+      "description": "Raw RGB images only. No calibration and no poses."
+    },
+    {
+      "id": "config_b",
+      "name": "config_b_calibrated_image_only",
+      "label": "Calibrated image-only",
+      "enabled": true,
+      "use_intrinsics": true,
+      "intrinsics_source": "colmap",
+      "pose_source": "none",
+      "description": "RGB images with COLMAP intrinsics only."
+    },
+    {
+      "id": "config_c",
+      "name": "config_c_calibrated_colmap_poses",
+      "label": "Calibrated + COLMAP poses",
+      "enabled": true,
+      "use_intrinsics": true,
+      "intrinsics_source": "colmap",
+      "pose_source": "colmap",
+      "pose_convention": "opencv_cam2world",
+      "pose_metric_scale": false,
+      "description": "RGB images with COLMAP intrinsics and COLMAP cam2world poses."
+    },
+    {
+      "id": "config_d",
+      "name": "config_d_calibrated_ar_poses",
+      "label": "Calibrated + AR poses",
+      "enabled": true,
+      "use_intrinsics": true,
+      "intrinsics_source": "ar_or_colmap",
+      "pose_source": "ar",
+      "pose_convention": "arkit_cam2world",
+      "pose_metric_scale": true,
+      "skip_if_missing_inputs": true,
+      "description": "Optional Task 3 input: RGB images with intrinsics and ARKit/ARCore VIO poses."
+    }
+  ]
+}

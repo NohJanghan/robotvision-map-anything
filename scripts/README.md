@@ -13,3 +13,6 @@ Implemented COLMAP helpers:
   from an MP4/MOV video for COLMAP input.
 - `colmap/run_pipeline.py`: run feature extraction, matching, mapper, TXT export,
   PLY export, trajectory plotting, and metrics logging.
+- `mapanything/run_pipline.py`: run Task 2 MapAnything configurations from
+  `configs/mapanything/task2_pipeline.json`, write per-config manifests,
+  reconstruction artifacts, render/pose/intrinsics metrics, and a Task 2 summary.

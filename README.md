@@ -131,6 +131,24 @@ MapAnything은 이미지뿐 아니라 카메라 내부 파라미터, 포즈, 깊
 - 예측 pose error와 실행 시간 등 추가 지표 정리
 - 실패 사례, artefact, 관찰된 품질 차이 분석
 
+기본 Task 2 파이프라인은 다음과 같이 실행한다. 설정은
+`configs/mapanything/task2_pipeline.json`에서 읽는다.
+
+```bash
+conda activate rkv-mapanything
+python scripts/mapanything/run_pipline.py \
+  --config configs/mapanything/task2_pipeline.json
+```
+
+입력 검증과 manifest 작성만 먼저 확인하려면 다음을 실행한다.
+
+```bash
+python scripts/mapanything/run_pipline.py --prepare-only
+```
+
+결과는 각 설정별 `outputs/mapanything/<run-name>/config_*` 디렉토리와
+`outputs/mapanything/<run-name>_task2_summary.json`에 저장된다.
+
 ## Task 3: ARKit 또는 ARCore 기반 Pose 입력, 선택 과제
 
 Task 3은 선택 과제이다. 모바일 기기에서 ARKit 또는 ARCore를 사용하여 VIO pose를

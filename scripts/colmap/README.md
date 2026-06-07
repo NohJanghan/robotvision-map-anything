@@ -42,6 +42,39 @@ python scripts/colmap/preprocess_video.py /path/to/scene.mp4 \
 
 ## 2. Run COLMAP
 
+This project runs COLMAP through Docker by default because the conda COLMAP
+package on the project machine may be built without CUDA support.
+
+Requirements on the host:
+
+- NVIDIA driver
+- Docker 19.03+
+- NVIDIA Container Toolkit
+
+The default runner is `scripts/colmap/colmap_docker.py`. It prefers a locally
+built `colmap:latest` image and otherwise uses the official
+`colmap/colmap:latest` image.
+
+To build the local image from the official COLMAP Dockerfile:
+
+```bash
+scripts/colmap/build_colmap_docker.sh
+```
+
+You can pass Docker build args through the script when needed:
+
+```bash
+scripts/colmap/build_colmap_docker.sh --build-arg CUDA_ARCHITECTURES=89
+```
+
+Verify the Docker runner:
+
+```bash
+scripts/colmap/colmap_docker.py -h
+```
+
+Then run the project pipeline:
+
 ```bash
 conda activate rkv-mapanything
 python scripts/colmap/run_pipeline.py \
@@ -49,7 +82,15 @@ python scripts/colmap/run_pipeline.py \
   --run-name scene
 ```
 
-For a CPU-only environment, add `--use-gpu 0`.
+For a CPU-only local fallback, pass a local binary explicitly:
+
+```bash
+python scripts/colmap/run_pipeline.py \
+  --image-dir data/raw/rgb_sequences/scene \
+  --run-name scene_cpu \
+  --colmap colmap \
+  --use-gpu 0
+```
 
 The defaults are tuned for a short RGB video/image sequence used later by
 MapAnything:
@@ -67,8 +108,9 @@ MapAnything receives the pinhole part of the COLMAP intrinsics.
 
 When running over SSH or on a headless server, the script sets
 `QT_QPA_PLATFORM=offscreen` for COLMAP by default so the Qt-based CLI binary
-does not try to open an X display. If your COLMAP build needs a different
-backend, pass `--qt-qpa-platform minimal`.
+does not try to open an X display. The Docker wrapper forwards this environment
+variable into the container. If your COLMAP build needs a different backend,
+pass `--qt-qpa-platform minimal`.
 
 If GPU SIFT fails with an OpenGL context error on a headless machine, run the
 COLMAP commands through `xvfb-run`:
@@ -84,7 +126,8 @@ python scripts/colmap/run_pipeline.py \
 
 The `--use-xvfb` option removes the default `QT_QPA_PLATFORM=offscreen` setting
 for COLMAP subprocesses so the temporary X display created by `xvfb-run` can be
-used.
+used. The Docker wrapper forwards `DISPLAY` and mounts `/tmp/.X11-unix` when it
+is available.
 
 For unordered image collections instead of video frames, use exhaustive
 matching:

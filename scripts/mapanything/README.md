@@ -27,6 +27,20 @@ Config D는 Task 3과 연결되는 선택 설정이다. AR pose 파일이 없으
 
 기본 JSON 설정은 `configs/mapanything/task2_pipeline.json`이다.
 
+RGB video와 `odometry.csv`가 있는 `input/<run-name>` 캡처는 다음 명령으로
+MapAnything/COLMAP 공통 입력으로 변환한다.
+
+```bash
+conda run -n rkv-mapanything python scripts/mapanything/prepare_capture_inputs.py \
+  --input-dir input/<run-name> \
+  --max-frames 64 \
+  --max-side 1600 \
+  --overwrite
+```
+
+`prepare_bike_inputs.py`는 초기 bike 실행 기록과의 호환을 위해 남겨 둔 동일 기능
+entrypoint이다.
+
 기본 입력 경로:
 
 ```text

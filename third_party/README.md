@@ -3,6 +3,8 @@
 External source checkouts live here.
 
 - `map-anything/`: local checkout of `facebookresearch/map-anything`
+- `colmap/`: optional local checkout of `colmap/colmap` used only when building
+  the GPU-enabled Docker image from the official Dockerfile
 
-The MapAnything checkout is ignored by the parent repository so it can be updated
-or replaced independently.
+These checkouts are ignored by the parent repository so they can be updated or
+replaced independently.

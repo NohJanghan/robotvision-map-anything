@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from typing import Iterable, NoReturn
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 TEXT_MODEL_FILES = ("cameras.txt", "images.txt", "points3D.txt")
+DEFAULT_COLMAP_COMMAND = str(Path(__file__).resolve().with_name("colmap_docker.py"))
 DENSE_TASK_DECISION = {
     "required_for_project_pdf": False,
     "reason": (
@@ -62,8 +64,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--colmap",
-        default="colmap",
-        help="COLMAP executable path or command name. Default: colmap.",
+        default=DEFAULT_COLMAP_COMMAND,
+        help=(
+            "COLMAP executable path or command name. Default: "
+            "scripts/colmap/colmap_docker.py, which runs the official "
+            "GPU-enabled COLMAP Docker image."
+        ),
     )
     parser.add_argument(
         "--camera-model",
@@ -278,6 +284,24 @@ def run_command(command: list[str], log_file: Path, env: dict[str, str]) -> str:
     return result.stdout
 
 
+def command_help(command: list[str], env: dict[str, str]) -> str:
+    result = subprocess.run(
+        [*command, "-h"],
+        check=False,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    return result.stdout
+
+
+def select_option(help_text: str, preferred: str, fallback: str) -> str:
+    if preferred in help_text:
+        return preferred
+    return fallback
+
+
 def safe_remove(path: Path, allowed_root: Path) -> None:
     if not path.exists():
         return
@@ -291,17 +315,29 @@ def safe_remove(path: Path, allowed_root: Path) -> None:
         path.unlink()
 
 
-def latest_sparse_model(sparse_dir: Path) -> Path:
+def read_colmap_binary_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open("rb") as fp:
+        data = fp.read(8)
+    if len(data) < 8:
+        return 0
+    return int(struct.unpack("<Q", data)[0])
+
+
+def largest_sparse_model(sparse_dir: Path) -> Path:
     candidates = [
         p for p in sparse_dir.iterdir() if p.is_dir() and (p / "cameras.bin").exists()
     ]
     if not candidates:
         fail(f"no sparse COLMAP model found under {sparse_dir}")
 
-    def sort_key(path: Path) -> tuple[int, str]:
-        return (int(path.name), path.name) if path.name.isdigit() else (sys.maxsize, path.name)
+    def sort_key(path: Path) -> tuple[int, int, str]:
+        image_count = read_colmap_binary_count(path / "images.bin")
+        point_count = read_colmap_binary_count(path / "points3D.bin")
+        return (image_count, point_count, path.name)
 
-    return sorted(candidates, key=sort_key)[0]
+    return max(candidates, key=sort_key)
 
 
 def parse_model_analyzer(output: str) -> dict[str, object]:
@@ -423,6 +459,14 @@ def copy_text_model(export_dir: Path, processed_export_dir: Path) -> None:
         shutil.copy2(source, processed_export_dir / filename)
 
 
+def write_image_list(path: Path, images: list[Path]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(f"{image.name}\n" for image in images),
+        encoding="utf-8",
+    )
+
+
 def write_run_summary(
     path: Path,
     args: argparse.Namespace,
@@ -456,6 +500,7 @@ def write_run_summary(
             "qt_qpa_platform": args.qt_qpa_platform,
             "use_xvfb": args.use_xvfb,
             "xvfb_run": args.xvfb_run,
+            "colmap": args.colmap,
         },
         "colmap_dense_decision": DENSE_TASK_DECISION,
         "paths": {key: str(value.resolve()) for key, value in paths.items()},
@@ -499,8 +544,8 @@ def main() -> None:
     images = validate_args(args)
     colmap = require_tool(
         args.colmap,
-        "Activate rkv-mapanything and install COLMAP, e.g. "
-        "`conda install -c conda-forge colmap`.",
+        "Install Docker with NVIDIA Container Toolkit for the default GPU "
+        "COLMAP wrapper, or pass --colmap colmap to use a local binary.",
     )
     xvfb_prefix = xvfb_command_prefix(args)
 
@@ -508,6 +553,7 @@ def main() -> None:
     run_name = args.run_name
     database_dir = output_root / "databases" / run_name
     database_path = database_dir / "database.db"
+    image_list_path = database_dir / "image_list.txt"
     sparse_dir = output_root / "sparse" / run_name
     dense_dir = output_root / "dense" / run_name
     visual_dir = output_root / "visualizations" / run_name
@@ -529,6 +575,7 @@ def main() -> None:
 
     for path in (database_dir, sparse_dir, visual_dir, log_dir, export_dir, processed_export_dir):
         path.mkdir(parents=True, exist_ok=True)
+    write_image_list(image_list_path, images)
 
     commands: list[str] = []
     env = colmap_environment(args.qt_qpa_platform, args.use_xvfb)
@@ -537,6 +584,30 @@ def main() -> None:
         full_command = [*xvfb_prefix, *command]
         commands.append(" ".join(full_command))
         return run_command(full_command, log_dir / log_name, env)
+
+    feature_help = command_help([*xvfb_prefix, colmap, "feature_extractor"], env)
+    matcher_help = command_help([*xvfb_prefix, colmap, f"{args.matcher}_matcher"], env)
+    mapper_help = command_help([*xvfb_prefix, colmap, "mapper"], env)
+    feature_gpu_option = select_option(
+        feature_help,
+        "--FeatureExtraction.use_gpu",
+        "--SiftExtraction.use_gpu",
+    )
+    feature_max_image_size_option = select_option(
+        feature_help,
+        "--FeatureExtraction.max_image_size",
+        "--SiftExtraction.max_image_size",
+    )
+    matching_gpu_option = select_option(
+        matcher_help,
+        "--FeatureMatching.use_gpu",
+        "--SiftMatching.use_gpu",
+    )
+    mapper_ba_global_images_ratio_option = select_option(
+        mapper_help,
+        "--Mapper.ba_global_frames_ratio",
+        "--Mapper.ba_global_images_ratio",
+    )
 
     if not args.skip_features:
         feature_command = [
@@ -550,11 +621,13 @@ def main() -> None:
             args.camera_model,
             "--ImageReader.single_camera",
             "1" if args.single_camera else "0",
-            "--SiftExtraction.use_gpu",
+            "--image_list_path",
+            str(image_list_path),
+            feature_gpu_option,
             str(args.use_gpu),
             "--SiftExtraction.max_num_features",
             str(args.max_num_features),
-            "--SiftExtraction.max_image_size",
+            feature_max_image_size_option,
             str(args.max_image_size),
         ]
         if args.camera_params:
@@ -567,7 +640,7 @@ def main() -> None:
             f"{args.matcher}_matcher",
             "--database_path",
             str(database_path),
-            "--SiftMatching.use_gpu",
+            matching_gpu_option,
             str(args.use_gpu),
         ]
         if args.matcher == "sequential":
@@ -596,7 +669,7 @@ def main() -> None:
                 str(args.mapper_min_num_matches),
                 "--Mapper.init_min_tri_angle",
                 str(args.mapper_init_min_tri_angle),
-                "--Mapper.ba_global_images_ratio",
+                mapper_ba_global_images_ratio_option,
                 str(args.mapper_ba_global_images_ratio),
                 "--Mapper.ba_global_points_ratio",
                 str(args.mapper_ba_global_points_ratio),
@@ -604,7 +677,7 @@ def main() -> None:
             "03_mapper.log",
         )
 
-    model_dir = latest_sparse_model(sparse_dir)
+    model_dir = largest_sparse_model(sparse_dir)
     run(
         [
             colmap,
@@ -648,6 +721,7 @@ def main() -> None:
 
     paths = {
         "database": database_path,
+        "image_list": image_list_path,
         "binary_sparse_model": model_dir,
         "txt_export": processed_export_dir,
         "ply_point_cloud": ply_path,

@@ -21,12 +21,25 @@ cd third_party/map-anything
 pip install -e .
 ```
 
-COLMAP 설치를 위해서
+COLMAP은 conda 패키지 대신 공식 GPU 지원 Docker 이미지를 사용한다. 호스트에는
+NVIDIA driver, Docker 19.03+, NVIDIA Container Toolkit이 필요하다.
+
 ```bash
-conda activate rkv-mapanything
-conda install -c conda-forge colmap
+# 공식 colmap/colmap:latest 이미지 또는 로컬 colmap:latest 이미지로 COLMAP 확인
+scripts/colmap/colmap_docker.py -h
 ```
 
+로컬에서 공식 Dockerfile로 직접 빌드하려면 다음을 실행한다.
+
+```bash
+scripts/colmap/build_colmap_docker.sh
+```
+
+`build_colmap_docker.sh`는 `https://github.com/colmap/colmap`을
+`third_party/colmap/`에 체크아웃하고, 공식 `docker/Dockerfile`로
+`colmap:latest` 이미지를 만든다. 이후 `scripts/colmap/colmap_docker.py`는 로컬
+`colmap:latest`를 우선 사용하고, 없으면 공식 `colmap/colmap:latest` 이미지를
+사용한다.
 
 ## 디렉토리 구조
 
@@ -90,6 +103,10 @@ python scripts/colmap/run_pipeline.py \
   --image-dir data/raw/rgb_sequences/scene \
   --run-name scene
 ```
+
+기본값은 `scripts/colmap/colmap_docker.py`를 통해 GPU 지원 Docker COLMAP을
+실행한다. CPU-only 로컬 바이너리를 꼭 써야 할 때만
+`--colmap colmap --use-gpu 0`을 명시한다.
 
 실행 결과는 `data/processed/colmap_exports/<run-name>/`의 `cameras.txt`,
 `images.txt`, `points3D.txt`와 `outputs/colmap/` 아래의 sparse model, PLY,

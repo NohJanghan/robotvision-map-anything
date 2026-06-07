@@ -166,9 +166,29 @@ def parse_args() -> argparse.Namespace:
         help="Override model.name from the JSON config.",
     )
     parser.add_argument(
+        "--require-gpu",
+        action="store_true",
+        help="Fail before loading MapAnything if CUDA is not available.",
+    )
+    parser.add_argument(
         "--apache",
         action="store_true",
         help="Use facebook/map-anything-apache regardless of the JSON model setting.",
+    )
+    parser.add_argument(
+        "--view-start",
+        type=int,
+        help="Override view_selection.start from the JSON config.",
+    )
+    parser.add_argument(
+        "--view-stride",
+        type=int,
+        help="Override view_selection.stride from the JSON config.",
+    )
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        help="Override view_selection.max_images from the JSON config.",
     )
     parser.add_argument(
         "--only",
@@ -582,9 +602,17 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
     if args.model_name:
         config.setdefault("model", {})["name"] = args.model_name
         config.setdefault("model", {})["apache"] = False
+    if args.require_gpu:
+        config.setdefault("model", {})["require_gpu"] = True
     if args.apache:
         config.setdefault("model", {})["name"] = "facebook/map-anything-apache"
         config.setdefault("model", {})["apache"] = True
+    if args.view_start is not None:
+        config.setdefault("view_selection", {})["start"] = args.view_start
+    if args.view_stride is not None:
+        config.setdefault("view_selection", {})["stride"] = args.view_stride
+    if args.max_images is not None:
+        config.setdefault("view_selection", {})["max_images"] = args.max_images
     if args.continue_on_error:
         config["continue_on_error"] = True
 
@@ -904,6 +932,9 @@ def load_runtime() -> dict[str, Any]:
 
 
 def load_model(runtime: dict[str, Any], model_config: dict[str, Any]) -> tuple[Any, Any, str]:
+    torch = runtime["torch"]
+    if model_config.get("require_gpu", False) and not torch.cuda.is_available():
+        fail("CUDA is not available, but --require-gpu/model.require_gpu was set.")
     device = runtime["get_device"]()
     model_name = str(model_config.get("name", "facebook/map-anything"))
     if model_config.get("apache", False):

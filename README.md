@@ -45,6 +45,7 @@ conda install -c conda-forge colmap
 ├── outputs/                  # Git으로 관리하지 않는 실험 산출물
 │   ├── colmap/
 │   │   ├── databases/
+│   │   ├── dense/
 │   │   ├── exports/
 │   │   ├── sparse/
 │   │   ├── visualizations/
@@ -92,7 +93,23 @@ python scripts/colmap/run_pipeline.py \
 
 실행 결과는 `data/processed/colmap_exports/<run-name>/`의 `cameras.txt`,
 `images.txt`, `points3D.txt`와 `outputs/colmap/` 아래의 sparse model, PLY,
-camera trajectory plot, metrics/log 파일로 저장된다.
+camera trajectory plot, metrics/log 파일로 저장된다. 기본 COLMAP 설정은 이후
+MapAnything Config B/C에서 바로 쓸 수 있도록 pinhole intrinsics 중심으로 맞춰져
+있다.
+
+COLMAP dense MVS 결과는 과제 필수 산출물이 아니다. Project Guide의 Task 1은
+feature extraction, matching, incremental mapping, TXT export, sparse point cloud
+및 camera trajectory visualization, 등록 이미지 수와 평균 reprojection error를
+요구한다. Dense fused point cloud가 추가 스크린샷에 필요할 때만 다음 옵션을 붙인다.
+
+```bash
+python scripts/colmap/run_pipeline.py \
+  --image-dir data/raw/rgb_sequences/scene \
+  --run-name scene \
+  --run-dense
+```
+
+이 경우 `outputs/colmap/dense/<run-name>/fused.ply`가 추가로 저장된다.
 
 수행 절차:
 
@@ -129,6 +146,7 @@ MapAnything은 이미지뿐 아니라 카메라 내부 파라미터, 포즈, 깊
 - 실제 이미지와 렌더링 이미지 비교
 - PSNR, SSIM 등 정량 지표 계산
 - 예측 pose error와 실행 시간 등 추가 지표 정리
+- A vs B, B vs C, 선택적으로 C vs D 비교표 정리
 - 실패 사례, artefact, 관찰된 품질 차이 분석
 
 기본 Task 2 파이프라인은 다음과 같이 실행한다. 설정은
@@ -147,7 +165,9 @@ python scripts/mapanything/run_pipline.py --prepare-only
 ```
 
 결과는 각 설정별 `outputs/mapanything/<run-name>/config_*` 디렉토리와
-`outputs/mapanything/<run-name>_task2_summary.json`에 저장된다.
+`outputs/mapanything/<run-name>_task2_summary.json`에 저장된다. Markdown 요약에는
+각 config별 metric 표와 함께 A vs B calibration 효과, B vs C pose 입력 효과,
+선택 과제 C vs D pose source 비교가 자동으로 추가된다.
 
 ## Task 3: ARKit 또는 ARCore 기반 Pose 입력, 선택 과제
 

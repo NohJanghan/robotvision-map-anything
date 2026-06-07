@@ -12,7 +12,9 @@ Implemented COLMAP helpers:
 - `colmap/preprocess_video.py`: extract `000000.jpg`, `000001.jpg`, ... frames
   from an MP4/MOV video for COLMAP input.
 - `colmap/run_pipeline.py`: run feature extraction, matching, mapper, TXT export,
-  PLY export, trajectory plotting, and metrics logging.
+  PLY export, trajectory plotting, metrics logging, and optional dense MVS via
+  `--run-dense`.
 - `mapanything/run_pipline.py`: run Task 2 MapAnything configurations from
   `configs/mapanything/task2_pipeline.json`, write per-config manifests,
-  reconstruction artifacts, render/pose/intrinsics metrics, and a Task 2 summary.
+  reconstruction artifacts, render/pose/intrinsics metrics, required/optional
+  comparison deltas, and a Task 2 summary.

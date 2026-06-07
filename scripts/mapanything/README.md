@@ -139,10 +139,19 @@ data/processed/mapanything_inputs/<run-name>/<config-id>/manifest.json
 - relative rotation error
 - intrinsics error
 - Task 2 coverage review
+- A vs B, B vs C, 선택적 C vs D 비교 delta
 
 렌더링 평가는 예측 depth/pose로 만든 point-splat 결과를 target view와 비교한다.
 `evaluation.render.min_coverage`보다 coverage가 낮은 pair는 평균 PSNR/SSIM 집계에서
 제외되고, low-coverage pair 수가 summary에 기록된다.
+
+`<run-name>_task2_summary.md`에는 다음 비교가 자동으로 추가된다.
+
+| 비교 | 해석 |
+| --- | --- |
+| A vs B | COLMAP calibration 입력 효과 |
+| B vs C | COLMAP pose 입력 효과 |
+| C vs D | 선택 과제: COLMAP pose와 AR pose source 차이 |
 
 ## AR Pose JSON
 

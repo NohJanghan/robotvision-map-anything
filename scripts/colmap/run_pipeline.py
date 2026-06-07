@@ -17,13 +17,25 @@ from typing import Iterable, NoReturn
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
 TEXT_MODEL_FILES = ("cameras.txt", "images.txt", "points3D.txt")
+DENSE_TASK_DECISION = {
+    "required_for_project_pdf": False,
+    "reason": (
+        "Task 1 asks for COLMAP intrinsics, camera poses, sparse points, "
+        "trajectory visualization, registered image count, and mean "
+        "reprojection error. Dense MVS is useful for an extra qualitative "
+        "point-cloud screenshot, but it is not required for the Task 2 "
+        "MapAnything inputs."
+    ),
+    "required_outputs": ["cameras.txt", "images.txt", "points3D.txt", "points3D.ply"],
+    "optional_dense_output": "outputs/colmap/dense/<run-name>/fused.ply",
+}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run COLMAP feature extraction, matching, incremental mapping, "
-            "TXT export, and lightweight visualization."
+            "TXT export, lightweight visualization, and optional dense MVS."
         )
     )
     parser.add_argument(
@@ -55,8 +67,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--camera-model",
-        default="SIMPLE_RADIAL",
-        help="COLMAP ImageReader camera model. Default: SIMPLE_RADIAL.",
+        default="PINHOLE",
+        help=(
+            "COLMAP ImageReader camera model. Default: PINHOLE, so Task 2 can "
+            "reuse a 3x3 pinhole intrinsics matrix without silently dropping "
+            "distortion parameters."
+        ),
     )
     parser.add_argument(
         "--camera-params",
@@ -82,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         help="SIFT max number of features per image. Default: 8192.",
     )
     parser.add_argument(
+        "--max-image-size",
+        type=int,
+        default=1600,
+        help="SIFT max image side in pixels. Default: 1600.",
+    )
+    parser.add_argument(
         "--matcher",
         choices=("sequential", "exhaustive", "spatial"),
         default="sequential",
@@ -103,6 +125,48 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=15,
         help="Mapper minimum number of matches. Default: 15.",
+    )
+    parser.add_argument(
+        "--mapper-init-min-tri-angle",
+        type=float,
+        default=8.0,
+        help=(
+            "Mapper initial pair minimum triangulation angle in degrees. "
+            "Default: 8.0, a video-sequence-friendly value."
+        ),
+    )
+    parser.add_argument(
+        "--mapper-ba-global-images-ratio",
+        type=float,
+        default=1.4,
+        help="Mapper global BA image growth ratio. Default: 1.4.",
+    )
+    parser.add_argument(
+        "--mapper-ba-global-points-ratio",
+        type=float,
+        default=1.4,
+        help="Mapper global BA point growth ratio. Default: 1.4.",
+    )
+    parser.add_argument(
+        "--run-dense",
+        action="store_true",
+        help=(
+            "Also run optional COLMAP dense MVS: image_undistorter, "
+            "patch_match_stereo, and stereo_fusion. Not required by the "
+            "project PDF or by MapAnything inputs."
+        ),
+    )
+    parser.add_argument(
+        "--dense-max-image-size",
+        type=int,
+        default=1600,
+        help="Dense MVS max image side in pixels. Default: 1600.",
+    )
+    parser.add_argument(
+        "--dense-geom-consistency",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use geometric consistency for dense stereo/fusion. Default: true.",
     )
     parser.add_argument(
         "--qt-qpa-platform",
@@ -128,7 +192,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Remove this run's generated database/model/export directories first.",
+        help="Remove this run's generated output/export directories first.",
     )
     parser.add_argument(
         "--skip-features",
@@ -378,14 +442,22 @@ def write_run_summary(
             "single_camera": args.single_camera,
             "use_gpu": args.use_gpu,
             "max_num_features": args.max_num_features,
+            "max_image_size": args.max_image_size,
             "matcher": args.matcher,
             "sequential_overlap": args.sequential_overlap,
             "loop_detection": args.loop_detection,
             "mapper_min_num_matches": args.mapper_min_num_matches,
+            "mapper_init_min_tri_angle": args.mapper_init_min_tri_angle,
+            "mapper_ba_global_images_ratio": args.mapper_ba_global_images_ratio,
+            "mapper_ba_global_points_ratio": args.mapper_ba_global_points_ratio,
+            "run_dense": args.run_dense,
+            "dense_max_image_size": args.dense_max_image_size,
+            "dense_geom_consistency": args.dense_geom_consistency,
             "qt_qpa_platform": args.qt_qpa_platform,
             "use_xvfb": args.use_xvfb,
             "xvfb_run": args.xvfb_run,
         },
+        "colmap_dense_decision": DENSE_TASK_DECISION,
         "paths": {key: str(value.resolve()) for key, value in paths.items()},
         "metrics": metrics,
         "commands": list(commands),
@@ -403,10 +475,20 @@ def validate_args(args: argparse.Namespace) -> list[Path]:
         fail(f"no RGB image files found in {args.image_dir}")
     if args.max_num_features < 1:
         fail("--max-num-features must be positive")
+    if args.max_image_size < 1:
+        fail("--max-image-size must be positive")
     if args.sequential_overlap < 1:
         fail("--sequential-overlap must be positive")
     if args.mapper_min_num_matches < 1:
         fail("--mapper-min-num-matches must be positive")
+    if args.mapper_init_min_tri_angle < 0:
+        fail("--mapper-init-min-tri-angle must be non-negative")
+    if args.mapper_ba_global_images_ratio <= 1:
+        fail("--mapper-ba-global-images-ratio must be greater than 1")
+    if args.mapper_ba_global_points_ratio <= 1:
+        fail("--mapper-ba-global-points-ratio must be greater than 1")
+    if args.dense_max_image_size < 1:
+        fail("--dense-max-image-size must be positive")
     if args.run_name is None:
         args.run_name = args.image_dir.resolve().name
     return images
@@ -427,6 +509,7 @@ def main() -> None:
     database_dir = output_root / "databases" / run_name
     database_path = database_dir / "database.db"
     sparse_dir = output_root / "sparse" / run_name
+    dense_dir = output_root / "dense" / run_name
     visual_dir = output_root / "visualizations" / run_name
     log_dir = output_root / "logs" / run_name
     export_dir = output_root / "exports" / run_name
@@ -436,6 +519,7 @@ def main() -> None:
         for path, allowed_root in (
             (database_dir, output_root),
             (sparse_dir, output_root),
+            (dense_dir, output_root),
             (visual_dir, output_root),
             (log_dir, output_root),
             (export_dir, output_root),
@@ -470,6 +554,8 @@ def main() -> None:
             str(args.use_gpu),
             "--SiftExtraction.max_num_features",
             str(args.max_num_features),
+            "--SiftExtraction.max_image_size",
+            str(args.max_image_size),
         ]
         if args.camera_params:
             feature_command.extend(["--ImageReader.camera_params", args.camera_params])
@@ -508,6 +594,12 @@ def main() -> None:
                 str(sparse_dir),
                 "--Mapper.min_num_matches",
                 str(args.mapper_min_num_matches),
+                "--Mapper.init_min_tri_angle",
+                str(args.mapper_init_min_tri_angle),
+                "--Mapper.ba_global_images_ratio",
+                str(args.mapper_ba_global_images_ratio),
+                "--Mapper.ba_global_points_ratio",
+                str(args.mapper_ba_global_points_ratio),
             ],
             "03_mapper.log",
         )
@@ -563,6 +655,64 @@ def main() -> None:
         "metrics": metrics_path,
         "logs": log_dir,
     }
+
+    if args.run_dense:
+        # Preserve the required sparse-SfM summary even if optional dense MVS fails.
+        write_run_summary(log_dir / "run_summary.json", args, len(images), paths, metrics, commands)
+        dense_dir.mkdir(parents=True, exist_ok=True)
+        dense_fused_path = dense_dir / "fused.ply"
+        run(
+            [
+                colmap,
+                "image_undistorter",
+                "--image_path",
+                str(args.image_dir),
+                "--input_path",
+                str(model_dir),
+                "--output_path",
+                str(dense_dir),
+                "--output_type",
+                "COLMAP",
+                "--max_image_size",
+                str(args.dense_max_image_size),
+            ],
+            "07_image_undistorter.log",
+        )
+        run(
+            [
+                colmap,
+                "patch_match_stereo",
+                "--workspace_path",
+                str(dense_dir),
+                "--workspace_format",
+                "COLMAP",
+                "--PatchMatchStereo.geom_consistency",
+                "1" if args.dense_geom_consistency else "0",
+                "--PatchMatchStereo.max_image_size",
+                str(args.dense_max_image_size),
+            ],
+            "08_patch_match_stereo.log",
+        )
+        run(
+            [
+                colmap,
+                "stereo_fusion",
+                "--workspace_path",
+                str(dense_dir),
+                "--workspace_format",
+                "COLMAP",
+                "--input_type",
+                "geometric" if args.dense_geom_consistency else "photometric",
+                "--output_path",
+                str(dense_fused_path),
+                "--StereoFusion.max_image_size",
+                str(args.dense_max_image_size),
+            ],
+            "09_stereo_fusion.log",
+        )
+        paths["dense_workspace"] = dense_dir
+        paths["dense_fused_point_cloud"] = dense_fused_path
+
     write_run_summary(log_dir / "run_summary.json", args, len(images), paths, metrics, commands)
 
     print("\nCOLMAP pipeline complete")
@@ -570,6 +720,10 @@ def main() -> None:
     print(f"mean reprojection error: {metrics.get('mean_reprojection_error_px', 'unknown')} px")
     print(f"exported TXT model: {processed_export_dir}")
     print(f"visualizations: {visual_dir}")
+    if args.run_dense:
+        print(f"optional dense fused point cloud: {dense_dir / 'fused.ply'}")
+    else:
+        print("dense MVS: skipped (not required for the project PDF or MapAnything inputs)")
 
 
 if __name__ == "__main__":

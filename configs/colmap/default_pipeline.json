@@ -1,13 +1,24 @@
 {
   "description": "Default Task 1 COLMAP settings for a single RGB video/image sequence.",
-  "camera_model": "SIMPLE_RADIAL",
+  "camera_model": "PINHOLE",
   "single_camera": true,
   "use_gpu": true,
   "max_num_features": 8192,
+  "max_image_size": 1600,
   "matcher": "sequential",
   "sequential_overlap": 10,
   "loop_detection": false,
   "mapper_min_num_matches": 15,
+  "mapper_init_min_tri_angle": 8.0,
+  "mapper_ba_global_images_ratio": 1.4,
+  "mapper_ba_global_points_ratio": 1.4,
+  "dense": {
+    "enabled_by_default": false,
+    "run_flag": "--run-dense",
+    "max_image_size": 1600,
+    "geom_consistency": true,
+    "decision": "Dense COLMAP MVS is optional for extra qualitative screenshots; the project PDF and MapAnything Config B/C need sparse SfM exports: cameras.txt, images.txt, and points3D.txt."
+  },
   "outputs": {
     "output_root": "outputs/colmap",
     "export_root": "data/processed/colmap_exports"

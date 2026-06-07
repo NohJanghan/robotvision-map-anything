@@ -22,3 +22,6 @@ __pycache__/
 
 # External checkout. Keep MapAnything as a local third-party dependency here.
 /third_party/map-anything/
+
+# input files
+input/**

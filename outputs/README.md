@@ -6,6 +6,7 @@ The placeholders in this directory document the expected experiment layout.
 COLMAP outputs:
 
 - `colmap/databases/<run-name>/database.db`: feature and match database
+- `colmap/dense/<run-name>/fused.ply`: optional dense MVS output when `--run-dense` is set
 - `colmap/exports/<run-name>/`: intermediate TXT export
 - `colmap/sparse/<run-name>/`: binary sparse reconstruction
 - `colmap/visualizations/<run-name>/`: PLY point cloud and trajectory plot

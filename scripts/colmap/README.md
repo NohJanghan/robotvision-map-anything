@@ -4,6 +4,12 @@ Task 1 expects COLMAP intrinsics, poses, sparse points, a reconstruction
 visualization, and summary numbers such as registered image count and mean
 reprojection error.
 
+The optimized default is sparse SfM, not dense MVS. The project guide asks for
+`cameras.txt`, `images.txt`, `points3D.txt`, a point-cloud/trajectory
+visualization, registered image count, and reprojection error. Dense COLMAP MVS
+(`image_undistorter -> patch_match_stereo -> stereo_fusion`) is therefore kept
+as an optional extra for qualitative screenshots only.
+
 ## 1. Extract Frames From Video
 
 ```bash
@@ -45,6 +51,20 @@ python scripts/colmap/run_pipeline.py \
 
 For a CPU-only environment, add `--use-gpu 0`.
 
+The defaults are tuned for a short RGB video/image sequence used later by
+MapAnything:
+
+- `--camera-model PINHOLE` keeps the exported intrinsics compatible with the
+  3x3 pinhole matrix consumed by MapAnything Config B/C.
+- `--max-image-size 1600` controls SIFT memory/runtime on Colab/Elice while
+  preserving enough features for typical phone or webcam sequences.
+- `--mapper-init-min-tri-angle 8.0` and the global BA ratios follow a
+  video-sequence-friendly SfM setup for lower-parallax adjacent frames.
+
+If your raw camera has strong lens distortion and `PINHOLE` registers too few
+images, rerun with `--camera-model SIMPLE_RADIAL` and mention in the report that
+MapAnything receives the pinhole part of the COLMAP intrinsics.
+
 When running over SSH or on a headless server, the script sets
 `QT_QPA_PLATFORM=offscreen` for COLMAP by default so the Qt-based CLI binary
 does not try to open an X display. If your COLMAP build needs a different
@@ -76,6 +96,27 @@ python scripts/colmap/run_pipeline.py \
   --matcher exhaustive
 ```
 
+## Optional Dense COLMAP MVS
+
+Dense output is not required for Task 1 or as input to Task 2. If you want an
+additional COLMAP dense fused point cloud for screenshots, run:
+
+```bash
+python scripts/colmap/run_pipeline.py \
+  --image-dir data/raw/rgb_sequences/scene \
+  --run-name scene \
+  --run-dense
+```
+
+This adds:
+
+- `outputs/colmap/dense/<run-name>/fused.ply`
+- `outputs/colmap/dense/<run-name>/images/` undistorted dense workspace images
+- dense command logs under `outputs/colmap/logs/<run-name>/`
+
+Use dense sparingly on cloud GPUs because PatchMatch stereo is much slower and
+more memory-intensive than the sparse SfM outputs required by the project.
+
 ## Outputs
 
 The pipeline writes:
@@ -84,6 +125,7 @@ The pipeline writes:
 - `data/processed/colmap_exports/<run-name>/images.txt`
 - `data/processed/colmap_exports/<run-name>/points3D.txt`
 - `outputs/colmap/sparse/<run-name>/` binary COLMAP sparse model
+- optional `outputs/colmap/dense/<run-name>/fused.ply` when `--run-dense` is set
 - `outputs/colmap/visualizations/<run-name>/points3D.ply`
 - `outputs/colmap/visualizations/<run-name>/camera_trajectory.png`
 - `outputs/colmap/logs/<run-name>/metrics.json`

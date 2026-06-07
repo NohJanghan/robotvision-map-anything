@@ -33,6 +33,37 @@ SUMMARY_FIELDS = (
     "pose_ate_rmse",
     "relative_rotation_error_deg",
 )
+COMPARISON_FIELDS = (
+    "render_psnr_db",
+    "render_ssim",
+    "render_coverage",
+    "pose_ate_rmse",
+    "relative_rotation_error_deg",
+    "runtime_seconds",
+)
+TASK_COMPARISON_SPECS = (
+    {
+        "id": "a_vs_b",
+        "name": "A vs B",
+        "baseline": "config_a",
+        "candidate": "config_b",
+        "question": "Calibration effect",
+    },
+    {
+        "id": "b_vs_c",
+        "name": "B vs C",
+        "baseline": "config_b",
+        "candidate": "config_c",
+        "question": "Pose input effect",
+    },
+    {
+        "id": "c_vs_d",
+        "name": "C vs D",
+        "baseline": "config_c",
+        "candidate": "config_d",
+        "question": "COLMAP pose vs AR pose",
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -1787,6 +1818,72 @@ def task2_coverage_review(config: dict[str, Any], results: list[dict[str, Any]])
     }
 
 
+def comparison_value(result: dict[str, Any], field: str) -> Any:
+    if field == "runtime_seconds":
+        return result.get("runtime_seconds")
+    return result.get("summary_metrics", {}).get(field)
+
+
+def build_task_comparisons(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result_by_config = {str(result.get("config")): result for result in results}
+    comparisons: list[dict[str, Any]] = []
+    for spec in TASK_COMPARISON_SPECS:
+        baseline_id = str(spec["baseline"])
+        candidate_id = str(spec["candidate"])
+        baseline = result_by_config.get(baseline_id)
+        candidate = result_by_config.get(candidate_id)
+        comparison: dict[str, Any] = {
+            "id": spec["id"],
+            "name": spec["name"],
+            "question": spec["question"],
+            "baseline": baseline_id,
+            "candidate": candidate_id,
+        }
+        if baseline is None or candidate is None:
+            comparison.update(
+                {
+                    "status": "unavailable",
+                    "reason": "one or both configs were not selected",
+                    "metrics": {},
+                }
+            )
+            comparisons.append(comparison)
+            continue
+        if baseline.get("status") != "completed" or candidate.get("status") != "completed":
+            comparison.update(
+                {
+                    "status": "unavailable",
+                    "reason": (
+                        f"{baseline_id} status={baseline.get('status')}; "
+                        f"{candidate_id} status={candidate.get('status')}"
+                    ),
+                    "metrics": {},
+                }
+            )
+            comparisons.append(comparison)
+            continue
+
+        metric_deltas: dict[str, dict[str, Any]] = {}
+        for field in COMPARISON_FIELDS:
+            before = comparison_value(baseline, field)
+            after = comparison_value(candidate, field)
+            if before is None or after is None:
+                delta = None
+            else:
+                try:
+                    delta = float(after) - float(before)
+                except (TypeError, ValueError):
+                    delta = None
+            metric_deltas[field] = {
+                "baseline": before,
+                "candidate": after,
+                "delta": delta,
+            }
+        comparison.update({"status": "available", "metrics": metric_deltas})
+        comparisons.append(comparison)
+    return comparisons
+
+
 def write_markdown_summary(path: Path, summary: dict[str, Any]) -> None:
     lines = [
         "# Task 2 MapAnything Summary",
@@ -1817,6 +1914,32 @@ def write_markdown_summary(path: Path, summary: dict[str, Any]) -> None:
                 rot=format_float(values["relative_rotation_error_deg"]),
             )
         )
+    lines.extend(
+        [
+            "",
+            "## Task Comparisons",
+            "",
+            "| Comparison | Question | PSNR d | SSIM d | Coverage d | Pose ATE d | Runtime d (s) | Status |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    for comparison in summary.get("task2_comparisons", []):
+        metrics = comparison.get("metrics", {})
+        status = comparison.get("status", "")
+        if status != "available":
+            status = f"{status}: {comparison.get('reason', '')}"
+        lines.append(
+            "| {name} | {question} | {psnr} | {ssim} | {coverage} | {ate} | {runtime} | {status} |".format(
+                name=comparison.get("name", ""),
+                question=comparison.get("question", ""),
+                psnr=format_delta(metrics.get("render_psnr_db", {}).get("delta")),
+                ssim=format_delta(metrics.get("render_ssim", {}).get("delta")),
+                coverage=format_delta(metrics.get("render_coverage", {}).get("delta")),
+                ate=format_delta(metrics.get("pose_ate_rmse", {}).get("delta")),
+                runtime=format_delta(metrics.get("runtime_seconds", {}).get("delta")),
+                status=status,
+            )
+        )
     if summary.get("warnings"):
         lines.extend(["", "## Warnings", ""])
         for warning in summary["warnings"]:
@@ -1837,6 +1960,18 @@ def format_float(value: Any) -> str:
         return f"{float(value):.4f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def format_delta(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isinf(number):
+        return "inf" if number > 0 else "-inf"
+    return f"{number:+.4f}"
 
 
 def main() -> None:
@@ -1965,6 +2100,7 @@ def build_summary(
         "model_name": model_name or config.get("model", {}).get("name"),
         "warnings": warnings or [],
         "results": results,
+        "task2_comparisons": build_task_comparisons(results),
         "task2_coverage_review": task2_coverage_review(config, results),
     }
 

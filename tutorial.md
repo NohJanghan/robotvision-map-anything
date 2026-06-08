@@ -25,9 +25,9 @@ COLMAP/MapAnything Task 1-3 산출물로 변환하는 절차를 정리한다. �
 - COLMAP dense MVS는 기본 실행에서 제외한다. 과제 필수 산출물은 sparse SfM export,
   sparse point cloud, camera trajectory, registered image count, mean reprojection
   error이다.
-- 가능한 많은 데이터를 쓰되, frame 수를 조금씩 늘려 최대치를 찾는 식의 탐색은 하지
-  않는다. 현재 하드웨어에서 검증된 기준값을 먼저 사용하고, 장면 품질 문제는 frame
-  수보다 matching 전략으로 조정한다.
+- 가능한 많은 데이터를 쓰되, VRAM 사용량은 MapAnything의 `--max-images`와
+  `--view-stride`로 제한한다. 시간은 오래 걸려도 되므로 먼저 더 많은 frame으로
+  COLMAP 입력을 만들고, MapAnything에서 필요한 경우 view 수만 줄인다.
 - 결과 수치, 표, 해석은 `result.md`에 기록한다.
 
 ## 1. 환경 확인
@@ -61,11 +61,17 @@ conda run -n rkv-mapanything python -c "import cv2, pathlib; scene='<scene>'; ca
 
 프레임 선택 기준:
 
-- `--max-frames`: 현재 RTX 4090 24GB 환경에서는 128 view가 실험적으로 검증된
-  high-data 기준이다.
+- `--max-frames`: RTX 4090 24GB 환경에서는 256 view를 high-data 기준으로 사용한다.
+  MapAnything inference에는 그중 128 view를 넣고, 나머지 128 view는 holdout 평가에
+  사용한다.
 - `--stride`: 원본 전체 구간을 대략 덮도록 정한다.
   예: `stride ~= floor((source_frames - 1) / (max_frames - 1))`.
 - `--max-side 1600`: COLMAP과 MapAnything 모두에서 재사용한 안정 해상도이다.
+
+예시:
+
+- `bike`: source_frames 1176이면 256 view 기준 `stride ~= floor((1176 - 1) / (256 - 1)) = 4`
+- `lounge`: source_frames 1412이면 256 view 기준 `stride ~= floor((1412 - 1) / (256 - 1)) = 5`
 
 ## 3. 입력 전처리
 
@@ -76,7 +82,7 @@ entrypoint이며 같은 구현을 사용한다.
 conda run -n rkv-mapanything python scripts/mapanything/prepare_capture_inputs.py \
   --input-dir input/<scene> \
   --stride <stride> \
-  --max-frames 128 \
+  --max-frames 256 \
   --max-side 1600 \
   --overwrite
 ```
@@ -89,7 +95,7 @@ conda run -n rkv-mapanything python scripts/mapanything/prepare_capture_inputs.p
   --image-output-dir data/raw/rgb_sequences/<scene> \
   --ar-output-file data/raw/ar_captures/<scene>/poses.json \
   --stride <stride> \
-  --max-frames 128 \
+  --max-frames 256 \
   --max-side 1600 \
   --overwrite
 ```
@@ -129,7 +135,8 @@ conda run -n rkv-mapanything python scripts/colmap/run_pipeline.py \
 
 - `--camera-model PINHOLE`: MapAnything Config B/C가 3x3 pinhole intrinsics를 바로
   사용할 수 있게 한다.
-- `--max-num-features 8192`: 128-frame 실행에서 더 많은 feature를 사용한다.
+- `--max-num-features 8192`: 256-frame 실행에서도 안정적인 track 연결성을 얻기 위해
+  충분한 feature를 사용한다.
 - `--matcher sequential`: 비디오에서 추출한 순차 프레임에 적합한 기본값이다.
 - `--sequential-overlap 15`: 넉넉한 인접 프레임 matching으로 track 연결성을 높인다.
 - `--use-xvfb`: headless 환경의 OpenGL context 문제를 피한다.
@@ -170,7 +177,9 @@ Task 1 산출물:
 
 ## 5. Task 2/3: MapAnything
 
-COLMAP export와 AR/VIO pose를 모두 넘겨 네 config를 실행한다.
+COLMAP export와 AR/VIO pose를 모두 넘겨 네 config를 실행한다. 기본 설정은 256개
+입력 중 짝수 index 128개를 MapAnything inference에 사용하고, 홀수 index 128개를
+holdout 평가 target으로 사용한다.
 
 ```bash
 conda run -n rkv-mapanything python scripts/mapanything/run_pipline.py \
@@ -179,7 +188,13 @@ conda run -n rkv-mapanything python scripts/mapanything/run_pipline.py \
   --image-dir data/raw/rgb_sequences/<scene> \
   --colmap-export-dir data/processed/colmap_exports/<scene> \
   --ar-pose-file data/raw/ar_captures/<scene>/poses.json \
+  --view-start 0 \
+  --view-stride 2 \
   --max-images 128 \
+  --eval-holdout \
+  --eval-holdout-start 1 \
+  --eval-holdout-stride 2 \
+  --eval-holdout-max-images 128 \
   --require-gpu \
   --overwrite \
   --continue-on-error
@@ -192,7 +207,41 @@ conda run -n rkv-mapanything python scripts/mapanything/run_pipline.py \
 - Config C: image + COLMAP intrinsics + COLMAP poses
 - Config D: image + intrinsics + AR/VIO poses
 - COLMAP 등록 이미지가 있으면 `registered_or_all` 선택 규칙에 따라 등록된 view를
-  기준으로 네 config가 같은 view set을 사용한다.
+  기준으로 네 config가 같은 train/holdout view split을 사용한다.
+- holdout 평가는 train prediction을 COLMAP reference pose 기준으로 similarity-align한
+  뒤, 모든 train view의 predicted depth에서 얻은 valid points를 하나의 global point
+  cloud로 합쳐 inference에 쓰지 않은 target view pose로 point-splat rendering한다.
+  기본 `point_stride`는 2이며, summary 표의 `Eval` 열이 `holdout`이면 holdout metric을
+  사용한 것이다.
+- `configs/mapanything/task2_pipeline.json`은 `memory_efficient_inference: true`,
+  `minibatch_size: 1`, `use_amp: true`, `amp_dtype: bf16`로 설정되어 있어 실행 시간이
+  늘어나는 대신 VRAM 사용량을 낮춘다.
+
+VRAM이 부족하면 전처리/COLMAP 결과는 그대로 두고 MapAnything view 수만 줄인다.
+128 train view가 OOM이면 다음 순서로 train/holdout view 수를 같이 줄여 재실행한다.
+
+```bash
+conda run -n rkv-mapanything python scripts/mapanything/run_pipline.py \
+  --config configs/mapanything/task2_pipeline.json \
+  --run-name <scene> \
+  --image-dir data/raw/rgb_sequences/<scene> \
+  --colmap-export-dir data/processed/colmap_exports/<scene> \
+  --ar-pose-file data/raw/ar_captures/<scene>/poses.json \
+  --view-start 0 \
+  --view-stride 2 \
+  --max-images 96 \
+  --eval-holdout \
+  --eval-holdout-start 1 \
+  --eval-holdout-stride 2 \
+  --eval-holdout-max-images 96 \
+  --require-gpu \
+  --overwrite \
+  --continue-on-error
+```
+
+그래도 OOM이면 `--max-images 64 --eval-holdout-max-images 64`를 사용한다. 장면 전체
+구간을 더 넓게 유지하고 싶을 때는 `--view-stride`와 `--eval-holdout-stride`를 함께
+키운다.
 
 Task 2/3 산출물:
 
@@ -204,7 +253,8 @@ Task 2/3 산출물:
 - `outputs/mapanything/<scene>_task2_summary.md`
 
 각 config 디렉터리에는 `predicted_poses.json`, `reconstruction_points.ply`,
-`reconstruction.glb`, `predictions/`, `depth/`, `renders/`가 생성된다.
+`reconstruction.glb`, `predictions/`, `depth/`, `renders/`, `renders_holdout/`가
+생성된다.
 
 ## 6. 검증
 
@@ -242,7 +292,7 @@ sed -n '1,220p' outputs/mapanything/<scene>_task2_summary.md
 
 ```bash
 jq '{image_count, paths, metrics}' outputs/colmap/logs/<scene>/run_summary.json
-jq '.results[] | {config, status, view_count, runtime_seconds, summary_metrics}' \
+jq '.results[] | {config, status, view_count, holdout_view_count, runtime_seconds, summary_metrics}' \
   outputs/mapanything/<scene>_task2_summary.json
 ```
 

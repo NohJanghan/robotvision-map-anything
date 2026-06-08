@@ -13,8 +13,8 @@
   "view_selection": {
     "mode": "registered_or_all",
     "start": 0,
-    "stride": 1,
-    "max_images": null
+    "stride": 2,
+    "max_images": 128
   },
   "preprocess": {
     "resize_mode": "fixed_mapping",
@@ -60,6 +60,22 @@
       "bidirectional": false,
       "max_pairs": 8,
       "point_stride": 2,
+      "min_coverage": 0.01,
+      "save_images": true
+    },
+    "holdout": {
+      "enabled": true,
+      "mode": "registered_or_all",
+      "start": 1,
+      "stride": 2,
+      "max_images": 128,
+      "exclude_input_views": true,
+      "pose_source": "colmap",
+      "intrinsics_source": "colmap",
+      "source_strategy": "global_point_cloud",
+      "max_pairs": 128,
+      "point_stride": 2,
+      "global_point_max_points": null,
       "min_coverage": 0.01,
       "save_images": true
     }

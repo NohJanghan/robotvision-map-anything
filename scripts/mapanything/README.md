@@ -97,6 +97,13 @@ python scripts/mapanything/run_pipline.py --prepare-only --continue-on-error
 | `--ar-pose-file` | ARKit/ARCore pose JSON override |
 | `--input-root` | MapAnything input manifest 저장 루트 |
 | `--output-root` | MapAnything 결과 저장 루트 |
+| `--view-start` | inference view selection 시작 index override |
+| `--view-stride` | inference view selection stride override |
+| `--max-images` | inference view 최대 개수 override |
+| `--eval-holdout` | inference에 쓰지 않은 view로 holdout rendering 평가 활성화 |
+| `--eval-holdout-start` | holdout view selection 시작 index override |
+| `--eval-holdout-stride` | holdout view selection stride override |
+| `--eval-holdout-max-images` | holdout view 최대 개수 override |
 | `--only` | 특정 config만 실행 |
 | `--skip` | 특정 config 제외 |
 | `--prepare-only` | 모델 inference 없이 입력 검증만 수행 |
@@ -133,6 +140,10 @@ renders/*_render.png            # point-splat novel/re-target view rendering
 renders/*_target.png
 renders/*_mask.png
 renders/*_diff.png
+renders_holdout/*_render.png    # inference에 쓰지 않은 target view rendering
+renders_holdout/*_target.png
+renders_holdout/*_mask.png
+renders_holdout/*_diff.png
 metrics/run_summary.json        # config별 metric summary
 ```
 
@@ -156,6 +167,10 @@ data/processed/mapanything_inputs/<run-name>/<config-id>/manifest.json
 - A vs B, B vs C, 선택적 C vs D 비교 delta
 
 렌더링 평가는 예측 depth/pose로 만든 point-splat 결과를 target view와 비교한다.
+`evaluation.holdout.enabled`가 켜져 있으면 inference에 쓰지 않은 view를 별도 target으로
+사용한다. train prediction을 reference pose source에 similarity-align한 뒤 모든 train
+view의 predicted depth point를 하나의 global point cloud로 합쳐 target pose에
+렌더링하고, `metrics.render_holdout`에 결과를 저장한다.
 `evaluation.render.min_coverage`보다 coverage가 낮은 pair는 평균 PSNR/SSIM 집계에서
 제외되고, low-coverage pair 수가 summary에 기록된다.
 

@@ -112,6 +112,7 @@ class ViewSpec:
 class PreparedConfig:
     entry: dict[str, Any]
     view_specs: list[ViewSpec]
+    holdout_view_specs: list[ViewSpec]
     manifest_path: Path
     output_dir: Path
     stats: dict[str, Any]
@@ -127,6 +128,15 @@ class PredictionData:
     camera_pose: np.ndarray
     mask: np.ndarray
     world_points: np.ndarray
+
+
+@dataclass(frozen=True)
+class RenderView:
+    image_name: str
+    image_uint8: np.ndarray
+    intrinsics: np.ndarray
+    camera_pose: np.ndarray
+    mask: np.ndarray
 
 
 def parse_args() -> argparse.Namespace:
@@ -189,6 +199,26 @@ def parse_args() -> argparse.Namespace:
         "--max-images",
         type=int,
         help="Override view_selection.max_images from the JSON config.",
+    )
+    parser.add_argument(
+        "--eval-holdout",
+        action="store_true",
+        help="Enable evaluation.holdout rendering against views that were not used for inference.",
+    )
+    parser.add_argument(
+        "--eval-holdout-start",
+        type=int,
+        help="Override evaluation.holdout.start.",
+    )
+    parser.add_argument(
+        "--eval-holdout-stride",
+        type=int,
+        help="Override evaluation.holdout.stride.",
+    )
+    parser.add_argument(
+        "--eval-holdout-max-images",
+        type=int,
+        help="Override evaluation.holdout.max_images.",
     )
     parser.add_argument(
         "--only",
@@ -613,6 +643,21 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
         config.setdefault("view_selection", {})["stride"] = args.view_stride
     if args.max_images is not None:
         config.setdefault("view_selection", {})["max_images"] = args.max_images
+    if (
+        args.eval_holdout
+        or args.eval_holdout_start is not None
+        or args.eval_holdout_stride is not None
+        or args.eval_holdout_max_images is not None
+    ):
+        holdout_overrides = config.setdefault("evaluation", {}).setdefault("holdout", {})
+        if args.eval_holdout:
+            holdout_overrides["enabled"] = True
+        if args.eval_holdout_start is not None:
+            holdout_overrides["start"] = args.eval_holdout_start
+        if args.eval_holdout_stride is not None:
+            holdout_overrides["stride"] = args.eval_holdout_stride
+        if args.eval_holdout_max_images is not None:
+            holdout_overrides["max_images"] = args.eval_holdout_max_images
     if args.continue_on_error:
         config["continue_on_error"] = True
 
@@ -746,6 +791,65 @@ def pose_for_name(
     fail(f"unsupported pose source: {source}")
 
 
+def prepare_holdout_view_specs(
+    config: dict[str, Any],
+    image_paths: dict[str, Path],
+    colmap_model: ColmapModel | None,
+    ar_table: PoseTable | None,
+    train_names: set[str],
+) -> tuple[list[ViewSpec], dict[str, Any]]:
+    evaluation_config = dict(config.get("evaluation", {}))
+    holdout_config = dict(evaluation_config.get("holdout", {}))
+    if not evaluation_config.get("enabled", True) or not holdout_config.get("enabled", False):
+        return [], {"enabled": False}
+
+    pose_source = str(
+        holdout_config.get("pose_source", evaluation_config.get("reference_pose_source", "colmap"))
+    )
+    intrinsics_source = str(
+        holdout_config.get(
+            "intrinsics_source",
+            evaluation_config.get("reference_intrinsics_source", "colmap"),
+        )
+    )
+    selected_names = select_image_names(
+        image_paths=image_paths,
+        colmap_model=colmap_model,
+        view_selection=holdout_config,
+        entry={},
+    )
+    if holdout_config.get("exclude_input_views", True):
+        selected_names = [name for name in selected_names if name not in train_names]
+
+    skipped_without_required_data: list[str] = []
+    view_specs: list[ViewSpec] = []
+    for name in selected_names:
+        intrinsics = intrinsics_for_name(name, intrinsics_source, colmap_model, ar_table)
+        camera_pose = pose_for_name(name, pose_source, colmap_model, ar_table)
+        if intrinsics is None or camera_pose is None:
+            skipped_without_required_data.append(name)
+            continue
+        view_specs.append(
+            ViewSpec(
+                image_path=image_paths[name],
+                image_name=name,
+                intrinsics=intrinsics,
+                camera_pose=camera_pose,
+                pose_metric_scale=False,
+            )
+        )
+
+    return view_specs, {
+        "enabled": True,
+        "selected_images": len(selected_names),
+        "loaded_views": len(view_specs),
+        "skipped_without_required_data": skipped_without_required_data,
+        "pose_source": pose_source,
+        "intrinsics_source": intrinsics_source,
+        "exclude_input_views": bool(holdout_config.get("exclude_input_views", True)),
+    }
+
+
 def prepare_config(
     config: dict[str, Any],
     entry: dict[str, Any],
@@ -833,6 +937,13 @@ def prepare_config(
             }
         fail(message)
 
+    holdout_view_specs, holdout_stats = prepare_holdout_view_specs(
+        config=config,
+        image_paths=image_paths,
+        colmap_model=colmap_model,
+        ar_table=ar_table,
+        train_names={spec.image_name for spec in view_specs},
+    )
     mark_generated_dir(output_dir)
     stats = {
         "selected_images": len(selected_names),
@@ -840,17 +951,20 @@ def prepare_config(
         "skipped_without_required_data": skipped_without_required_data,
         "with_intrinsics": sum(1 for spec in view_specs if spec.intrinsics is not None),
         "with_poses": sum(1 for spec in view_specs if spec.camera_pose is not None),
+        "holdout": holdout_stats,
     }
     write_input_manifest(
         manifest_path=manifest_path,
         config=config,
         entry=entry,
         view_specs=view_specs,
+        holdout_view_specs=holdout_view_specs,
         stats=stats,
     )
     return PreparedConfig(
         entry=entry,
         view_specs=view_specs,
+        holdout_view_specs=holdout_view_specs,
         manifest_path=manifest_path,
         output_dir=output_dir,
         stats=stats,
@@ -862,10 +976,20 @@ def write_input_manifest(
     config: dict[str, Any],
     entry: dict[str, Any],
     view_specs: list[ViewSpec],
+    holdout_view_specs: list[ViewSpec],
     stats: dict[str, Any],
 ) -> None:
     def matrix_or_none(matrix: np.ndarray | None) -> list[list[float]] | None:
         return None if matrix is None else matrix.astype(float).tolist()
+
+    def view_payload(spec: ViewSpec) -> dict[str, Any]:
+        return {
+            "image_name": spec.image_name,
+            "image_path": str(spec.image_path.resolve()),
+            "intrinsics": matrix_or_none(spec.intrinsics),
+            "camera_pose": matrix_or_none(spec.camera_pose),
+            "pose_metric_scale": spec.pose_metric_scale,
+        }
 
     manifest = {
         "created_at": now_utc(),
@@ -883,16 +1007,8 @@ def write_input_manifest(
         "pose_source": entry.get("pose_source", "none"),
         "pose_metric_scale": bool(entry.get("pose_metric_scale", False)),
         "input_stats": stats,
-        "views": [
-            {
-                "image_name": spec.image_name,
-                "image_path": str(spec.image_path.resolve()),
-                "intrinsics": matrix_or_none(spec.intrinsics),
-                "camera_pose": matrix_or_none(spec.camera_pose),
-                "pose_metric_scale": spec.pose_metric_scale,
-            }
-            for spec in view_specs
-        ],
+        "views": [view_payload(spec) for spec in view_specs],
+        "holdout_views": [view_payload(spec) for spec in holdout_view_specs],
     }
     write_json(manifest_path, manifest)
 
@@ -911,7 +1027,7 @@ def load_runtime() -> dict[str, Any]:
         from mapanything.utils.colmap_export import export_predictions_to_colmap
         from mapanything.utils.device import get_device
         from mapanything.utils.geometry import depthmap_to_world_frame
-        from mapanything.utils.image import preprocess_inputs
+        from mapanything.utils.image import preprocess_inputs, rgb
         from mapanything.utils.viz import predictions_to_glb
     except ImportError as exc:
         fail(
@@ -927,6 +1043,7 @@ def load_runtime() -> dict[str, Any]:
         "get_device": get_device,
         "depthmap_to_world_frame": depthmap_to_world_frame,
         "preprocess_inputs": preprocess_inputs,
+        "rgb": rgb,
         "predictions_to_glb": predictions_to_glb,
     }
 
@@ -1078,6 +1195,47 @@ def extract_predictions(
             )
         )
     return predictions
+
+
+def processed_view_to_render_view(
+    runtime: dict[str, Any],
+    processed_view: dict[str, Any],
+    spec: ViewSpec,
+) -> RenderView:
+    image_float = runtime["rgb"](
+        processed_view["img"][0],
+        processed_view.get("data_norm_type", ["dinov2"])[0],
+    ).astype(np.float32)
+    image_uint8 = np.clip(image_float * 255.0, 0, 255).astype(np.uint8)
+    intrinsics = tensor_to_numpy(processed_view["intrinsics"][0]).astype(np.float32)
+    camera_pose = tensor_to_numpy(processed_view["camera_poses"][0]).astype(np.float32)
+    mask = np.ones(image_uint8.shape[:2], dtype=bool)
+    return RenderView(
+        image_name=spec.image_name,
+        image_uint8=image_uint8,
+        intrinsics=intrinsics,
+        camera_pose=camera_pose,
+        mask=mask,
+    )
+
+
+def materialize_render_targets(
+    runtime: dict[str, Any],
+    view_specs: list[ViewSpec],
+    config: dict[str, Any],
+    entry: dict[str, Any],
+) -> list[RenderView]:
+    if not view_specs:
+        return []
+    raw_views = materialize_views(runtime, view_specs)
+    processed_views = runtime["preprocess_inputs"](
+        raw_views,
+        **preprocess_kwargs(config, entry),
+    )
+    return [
+        processed_view_to_render_view(runtime, processed_view, spec)
+        for processed_view, spec in zip(processed_views, view_specs)
+    ]
 
 
 def write_depth_png(path: Path, depth: np.ndarray, mask: np.ndarray, Image: Any) -> None:
@@ -1266,16 +1424,19 @@ def rotation_angle_deg(rotation: np.ndarray) -> float:
     return math.degrees(math.acos(value))
 
 
-def similarity_align_points(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+def similarity_transform(
+    source: np.ndarray,
+    target: np.ndarray,
+) -> tuple[float, np.ndarray, np.ndarray] | None:
     if len(source) != len(target) or len(source) == 0:
-        return source
+        return None
     source_mean = source.mean(axis=0)
     target_mean = target.mean(axis=0)
     src_centered = source - source_mean
     tgt_centered = target - target_mean
     variance = np.mean(np.sum(src_centered * src_centered, axis=1))
     if variance <= 1e-12:
-        return source + (target_mean - source_mean)
+        return 1.0, np.eye(3, dtype=np.float32), target_mean - source_mean
     covariance = (src_centered.T @ tgt_centered) / len(source)
     u_mat, singular_values, vt_mat = np.linalg.svd(covariance)
     correction = np.eye(3)
@@ -1283,7 +1444,73 @@ def similarity_align_points(source: np.ndarray, target: np.ndarray) -> np.ndarra
         correction[-1, -1] = -1
     rotation = vt_mat.T @ correction @ u_mat.T
     scale = float(np.sum(singular_values * np.diag(correction)) / variance)
-    return scale * (src_centered @ rotation.T) + target_mean
+    translation = target_mean - scale * (source_mean @ rotation.T)
+    return scale, rotation.astype(np.float32), translation.astype(np.float32)
+
+
+def apply_similarity_transform(
+    points: np.ndarray,
+    transform: tuple[float, np.ndarray, np.ndarray],
+) -> np.ndarray:
+    scale, rotation, translation = transform
+    return (scale * (points @ rotation.T) + translation).astype(np.float32)
+
+
+def similarity_align_points(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    transform = similarity_transform(source, target)
+    if transform is None:
+        return source
+    return apply_similarity_transform(source, transform)
+
+
+def transform_prediction_world(
+    prediction: PredictionData,
+    transform: tuple[float, np.ndarray, np.ndarray],
+) -> PredictionData:
+    scale, rotation, translation = transform
+    camera_pose = prediction.camera_pose.copy()
+    camera_pose[:3, :3] = rotation @ camera_pose[:3, :3]
+    camera_pose[:3, 3] = scale * (camera_pose[:3, 3] @ rotation.T) + translation
+    world_points = apply_similarity_transform(prediction.world_points, transform)
+    return PredictionData(
+        image_name=prediction.image_name,
+        image_float=prediction.image_float,
+        image_uint8=prediction.image_uint8,
+        depth_z=prediction.depth_z,
+        intrinsics=prediction.intrinsics,
+        camera_pose=camera_pose.astype(np.float32),
+        mask=prediction.mask,
+        world_points=world_points,
+    )
+
+
+def align_predictions_to_reference(
+    predictions: list[PredictionData],
+    reference_poses: dict[str, np.ndarray],
+) -> tuple[list[PredictionData], dict[str, Any]]:
+    common = [pred for pred in predictions if pred.image_name in reference_poses]
+    if len(common) < 2:
+        return predictions, {
+            "available": False,
+            "common_views": len(common),
+            "reason": "need at least two common train/reference poses",
+        }
+    pred_centers = np.stack([pred.camera_pose[:3, 3] for pred in common], axis=0)
+    ref_centers = np.stack([reference_poses[pred.image_name][:3, 3] for pred in common], axis=0)
+    transform = similarity_transform(pred_centers, ref_centers)
+    if transform is None:
+        return predictions, {
+            "available": False,
+            "common_views": len(common),
+            "reason": "failed to estimate similarity transform",
+        }
+    aligned = [transform_prediction_world(pred, transform) for pred in predictions]
+    scale, _, _ = transform
+    return aligned, {
+        "available": True,
+        "common_views": len(common),
+        "scale": scale,
+    }
 
 
 def compute_pose_metrics(
@@ -1375,28 +1602,19 @@ def make_render_pairs(count: int, render_config: dict[str, Any]) -> list[tuple[i
     return pairs
 
 
-def render_source_to_target(
-    source: PredictionData,
-    target: PredictionData,
-    point_stride: int,
+def render_points_to_target(
+    points: np.ndarray,
+    colors: np.ndarray,
+    target: PredictionData | RenderView,
 ) -> tuple[np.ndarray, np.ndarray]:
-    point_stride = max(1, int(point_stride))
     height, width = target.image_uint8.shape[:2]
     render = np.zeros((height, width, 3), dtype=np.uint8)
     mask_out = np.zeros((height, width), dtype=bool)
-
-    points = source.world_points[::point_stride, ::point_stride].reshape(-1, 3)
-    colors = source.image_uint8[::point_stride, ::point_stride].reshape(-1, 3)
-    source_mask = source.mask[::point_stride, ::point_stride].reshape(-1)
-    finite = np.isfinite(points).all(axis=1)
-    points = points[source_mask & finite]
-    colors = colors[source_mask & finite]
     if len(points) == 0:
         return render, mask_out
 
     world2target = invert_pose(target.camera_pose)
-    points_h = np.concatenate([points, np.ones((len(points), 1), dtype=np.float32)], axis=1)
-    target_points = (world2target @ points_h.T).T[:, :3]
+    target_points = points @ world2target[:3, :3].T + world2target[:3, 3]
     z = target_points[:, 2]
     in_front = z > 1e-6
     target_points = target_points[in_front]
@@ -1406,8 +1624,12 @@ def render_source_to_target(
         return render, mask_out
 
     projected = (target.intrinsics @ target_points.T).T
-    u_coord = np.rint(projected[:, 0] / np.maximum(projected[:, 2], 1e-6)).astype(np.int32)
-    v_coord = np.rint(projected[:, 1] / np.maximum(projected[:, 2], 1e-6)).astype(np.int32)
+    u_coord = np.rint(projected[:, 0] / np.maximum(projected[:, 2], 1e-6)).astype(
+        np.int32
+    )
+    v_coord = np.rint(projected[:, 1] / np.maximum(projected[:, 2], 1e-6)).astype(
+        np.int32
+    )
     in_bounds = (u_coord >= 0) & (u_coord < width) & (v_coord >= 0) & (v_coord < height)
     u_coord = u_coord[in_bounds]
     v_coord = v_coord[in_bounds]
@@ -1417,18 +1639,66 @@ def render_source_to_target(
         return render, mask_out
 
     flat_indices = v_coord * width + u_coord
-    order = np.argsort(z)
-    used = np.zeros(height * width, dtype=bool)
+    order = np.lexsort((z, flat_indices))
+    sorted_flat_indices = flat_indices[order]
+    first_for_pixel = np.empty(len(order), dtype=bool)
+    first_for_pixel[0] = True
+    first_for_pixel[1:] = sorted_flat_indices[1:] != sorted_flat_indices[:-1]
+    chosen = order[first_for_pixel]
+
     flat_render = render.reshape(-1, 3)
     flat_mask = mask_out.reshape(-1)
-    for idx in order:
-        flat = flat_indices[idx]
-        if used[flat]:
-            continue
-        flat_render[flat] = colors[idx]
-        flat_mask[flat] = True
-        used[flat] = True
+    flat_render[flat_indices[chosen]] = colors[chosen]
+    flat_mask[flat_indices[chosen]] = True
     return render, mask_out
+
+
+def prediction_points(
+    prediction: PredictionData,
+    point_stride: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    point_stride = max(1, int(point_stride))
+    points = prediction.world_points[::point_stride, ::point_stride].reshape(-1, 3)
+    colors = prediction.image_uint8[::point_stride, ::point_stride].reshape(-1, 3)
+    mask = prediction.mask[::point_stride, ::point_stride].reshape(-1)
+    finite = np.isfinite(points).all(axis=1)
+    keep = mask & finite
+    return points[keep], colors[keep]
+
+
+def collect_global_point_cloud(
+    predictions: list[PredictionData],
+    point_stride: int,
+    max_points: int | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    point_chunks: list[np.ndarray] = []
+    color_chunks: list[np.ndarray] = []
+    for prediction in predictions:
+        points, colors = prediction_points(prediction, point_stride)
+        if len(points) == 0:
+            continue
+        point_chunks.append(points)
+        color_chunks.append(colors)
+
+    if not point_chunks:
+        return np.empty((0, 3), dtype=np.float32), np.empty((0, 3), dtype=np.uint8)
+
+    points_all = np.concatenate(point_chunks, axis=0).astype(np.float32, copy=False)
+    colors_all = np.concatenate(color_chunks, axis=0).astype(np.uint8, copy=False)
+    if max_points is not None and len(points_all) > int(max_points):
+        indices = np.linspace(0, len(points_all) - 1, int(max_points)).astype(np.int64)
+        points_all = points_all[indices]
+        colors_all = colors_all[indices]
+    return points_all, colors_all
+
+
+def render_source_to_target(
+    source: PredictionData,
+    target: PredictionData | RenderView,
+    point_stride: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    points, colors = prediction_points(source, point_stride)
+    return render_points_to_target(points, colors, target)
 
 
 def masked_global_ssim(image_a: np.ndarray, image_b: np.ndarray, mask: np.ndarray) -> float | None:
@@ -1583,6 +1853,173 @@ def evaluate_rendering(
     }
 
 
+def make_holdout_target_indices(
+    target_count: int,
+    holdout_config: dict[str, Any],
+) -> list[int]:
+    if target_count < 1:
+        return []
+    strategy = str(holdout_config.get("source_strategy", "global_point_cloud"))
+    if strategy != "global_point_cloud":
+        fail(f"unsupported holdout source_strategy: {strategy}")
+
+    max_pairs = holdout_config.get("max_pairs")
+    target_indices = list(range(target_count))
+    if max_pairs is not None:
+        target_indices = target_indices[: int(max_pairs)]
+    return target_indices
+
+
+def evaluate_holdout_rendering(
+    runtime: dict[str, Any],
+    predictions: list[PredictionData],
+    prepared: PreparedConfig,
+    config: dict[str, Any],
+    colmap_model: ColmapModel | None,
+    ar_table: PoseTable | None,
+) -> dict[str, Any]:
+    evaluation_config = dict(config.get("evaluation", {}))
+    holdout_config = dict(evaluation_config.get("holdout", {}))
+    if not evaluation_config.get("enabled", True) or not holdout_config.get(
+        "enabled", False
+    ):
+        return {"available": False, "reason": "disabled"}
+    if not prepared.holdout_view_specs:
+        return {"available": False, "reason": "no holdout views"}
+
+    target_views = materialize_render_targets(
+        runtime=runtime,
+        view_specs=prepared.holdout_view_specs,
+        config=config,
+        entry=prepared.entry,
+    )
+    if not target_views:
+        return {"available": False, "reason": "no materialized holdout targets"}
+
+    pose_source = str(
+        holdout_config.get("pose_source", evaluation_config.get("reference_pose_source", "colmap"))
+    )
+    reference_poses = reference_pose_table(pose_source, colmap_model, ar_table)
+    aligned_predictions, alignment = align_predictions_to_reference(predictions, reference_poses)
+    if not alignment.get("available", False):
+        return {
+            "available": False,
+            "reason": alignment.get("reason", "alignment unavailable"),
+            "alignment": alignment,
+        }
+
+    point_stride = int(holdout_config.get("point_stride", 2))
+    global_points, global_colors = collect_global_point_cloud(
+        predictions=aligned_predictions,
+        point_stride=point_stride,
+        max_points=holdout_config.get("global_point_max_points"),
+    )
+    if len(global_points) == 0:
+        return {
+            "available": False,
+            "reason": "global point cloud is empty",
+            "alignment": alignment,
+        }
+
+    min_coverage = float(holdout_config.get("min_coverage", 0.0) or 0.0)
+    target_indices = make_holdout_target_indices(len(target_views), holdout_config)
+    if not target_indices:
+        return {"available": False, "reason": "no holdout targets", "alignment": alignment}
+
+    render_dir = prepared.output_dir / "renders_holdout"
+    if holdout_config.get("save_images", True):
+        render_dir.mkdir(parents=True, exist_ok=True)
+
+    pair_metrics: list[dict[str, Any]] = []
+    for target_idx in target_indices:
+        target = target_views[target_idx]
+        render, render_mask = render_points_to_target(
+            points=global_points,
+            colors=global_colors,
+            target=target,
+        )
+        valid_mask = render_mask & target.mask
+        metrics = image_metrics(render, target.image_uint8, valid_mask)
+        metrics["meets_min_coverage"] = metrics["coverage"] >= min_coverage
+        metrics.update(
+            {
+                "target_index": target_idx,
+                "source_mode": "global_point_cloud",
+                "source_images": len(aligned_predictions),
+                "global_point_count": len(global_points),
+                "target_image": target.image_name,
+            }
+        )
+        pair_metrics.append(metrics)
+        if holdout_config.get("save_images", True):
+            target_stem = Path(target.image_name).stem
+            stem = f"global_to_holdout_{target_idx:04d}_{target_stem}"
+            Image = runtime["Image"]
+            Image.fromarray(render).save(render_dir / f"{stem}_render.png")
+            Image.fromarray(target.image_uint8).save(render_dir / f"{stem}_target.png")
+            Image.fromarray((valid_mask.astype(np.uint8) * 255)).save(
+                render_dir / f"{stem}_mask.png"
+            )
+            diff = np.abs(
+                render.astype(np.int16) - target.image_uint8.astype(np.int16)
+            ).astype(np.uint8)
+            diff[~valid_mask] = 0
+            Image.fromarray(diff).save(render_dir / f"{stem}_diff.png")
+
+    qualified_metrics = [item for item in pair_metrics if item["meets_min_coverage"]]
+    psnr_values = [
+        item["psnr_db"]
+        for item in qualified_metrics
+        if item["psnr_db"] is not None and math.isfinite(item["psnr_db"])
+    ]
+    ssim_values = [item["ssim"] for item in qualified_metrics if item["ssim"] is not None]
+    full_psnr_values = [
+        item["full_image_psnr_db"]
+        for item in qualified_metrics
+        if item.get("full_image_psnr_db") is not None
+        and math.isfinite(item["full_image_psnr_db"])
+    ]
+    full_ssim_values = [
+        item["full_image_ssim"]
+        for item in qualified_metrics
+        if item.get("full_image_ssim") is not None
+    ]
+    coverage_values = [item["coverage"] for item in qualified_metrics]
+    return {
+        "available": bool(qualified_metrics),
+        "split": "holdout",
+        "source_count": len(predictions),
+        "target_count": len(target_views),
+        "global_point_count": len(global_points),
+        "point_stride": point_stride,
+        "pair_count": len(pair_metrics),
+        "qualified_pair_count": len(qualified_metrics),
+        "low_coverage_pair_count": len(pair_metrics) - len(qualified_metrics),
+        "min_coverage": min_coverage,
+        "source_strategy": str(
+            holdout_config.get("source_strategy", "global_point_cloud")
+        ),
+        "pairs": pair_metrics,
+        "alignment": alignment,
+        "psnr_db_mean": None if not psnr_values else float(np.mean(psnr_values)),
+        "ssim_mean": None if not ssim_values else float(np.mean(ssim_values)),
+        "full_image_psnr_db_mean": None
+        if not full_psnr_values
+        else float(np.mean(full_psnr_values)),
+        "full_image_ssim_mean": None if not full_ssim_values else float(np.mean(full_ssim_values)),
+        "coverage_mean": None if not coverage_values else float(np.mean(coverage_values)),
+        "render_dir": str(render_dir.resolve())
+        if holdout_config.get("save_images", True)
+        else None,
+        "note": (
+            "Holdout point-splat rendering. Train predictions are "
+            "similarity-aligned to the reference pose source, fused into one "
+            "global point cloud, then rendered into target views that were not "
+            "used for MapAnything inference."
+        ),
+    }
+
+
 def reference_pose_table(
     source: str,
     colmap_model: ColmapModel | None,
@@ -1657,22 +2094,38 @@ def evaluate_predictions(
         render_config=render_config,
         Image=runtime["Image"],
     )
+    holdout_render_metrics = evaluate_holdout_rendering(
+        runtime=runtime,
+        predictions=predictions,
+        prepared=prepared,
+        config=config,
+        colmap_model=colmap_model,
+        ar_table=ar_table,
+    )
     return {
         "pose_reference_source": pose_source,
         "intrinsics_reference_source": effective_intrinsics_source,
         "pose": compute_pose_metrics(predictions, reference_poses, direct_pose_comparison),
         "intrinsics": compute_intrinsics_metrics(predictions, reference_intrinsics),
         "render": render_metrics,
+        "render_holdout": holdout_render_metrics,
     }
 
 
 def flatten_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
-    render = metrics.get("render", {})
+    holdout_render = metrics.get("render_holdout", {})
+    if holdout_render.get("available", False):
+        render = holdout_render
+        render_eval_split = "holdout"
+    else:
+        render = metrics.get("render", {})
+        render_eval_split = "train"
     pose = metrics.get("pose", {})
     return {
         "render_psnr_db": render.get("psnr_db_mean"),
         "render_ssim": render.get("ssim_mean"),
         "render_coverage": render.get("coverage_mean"),
+        "render_eval_split": render_eval_split,
         "pose_ate_rmse": pose.get("ate_rmse"),
         "relative_rotation_error_deg": pose.get("relative_rotation_error_deg_mean"),
     }
@@ -1716,6 +2169,7 @@ def run_prepared_config(
         "label": prepared.entry.get("label"),
         "status": "completed",
         "view_count": len(prepared.view_specs),
+        "holdout_view_count": len(prepared.holdout_view_specs),
         "runtime_seconds": runtime_seconds,
         "input_manifest": str(prepared.manifest_path.resolve()),
         "output_dir": str(prepared.output_dir.resolve()),
@@ -1734,6 +2188,13 @@ def task2_coverage_review(config: dict[str, Any], results: list[dict[str, Any]])
     result_by_config = {str(result.get("config")): result for result in results}
     required_configs = ("config_a", "config_b", "config_c")
 
+    def has_render_metrics(result: dict[str, Any]) -> bool:
+        metrics = result.get("metrics", {})
+        return bool(
+            metrics.get("render_holdout", {}).get("available", False)
+            or metrics.get("render", {}).get("available", False)
+        )
+
     def has_config(use_intrinsics: bool, pose_source: str) -> bool:
         return any(
             bool(entry.get("use_intrinsics", False)) is use_intrinsics
@@ -1750,10 +2211,7 @@ def task2_coverage_review(config: dict[str, Any], results: list[dict[str, Any]])
     required_render_ready = [
         config_id
         for config_id in required_configs
-        if result_by_config.get(config_id, {})
-        .get("metrics", {})
-        .get("render", {})
-        .get("available", False)
+        if has_render_metrics(result_by_config.get(config_id, {}))
     ]
     required_view_counts = [
         int(result_by_config[config_id]["view_count"])
@@ -1923,8 +2381,8 @@ def write_markdown_summary(path: Path, summary: dict[str, Any]) -> None:
         f"- Run name: {summary['run_name']}",
         f"- Config JSON: {summary['config_path']}",
         "",
-        "| Config | Status | Views | Runtime (s) | PSNR | SSIM | Coverage | Pose ATE RMSE | Rel. Rot. Err. |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Config | Status | Views | Eval | Runtime (s) | PSNR | SSIM | Coverage | Pose ATE RMSE | Rel. Rot. Err. |",
+        "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for result in summary["results"]:
         metrics = result.get("summary_metrics", {})
@@ -1933,10 +2391,11 @@ def write_markdown_summary(path: Path, summary: dict[str, Any]) -> None:
             for key in SUMMARY_FIELDS
         }
         lines.append(
-            "| {config} | {status} | {views} | {runtime} | {psnr} | {ssim} | {coverage} | {ate} | {rot} |".format(
+            "| {config} | {status} | {views} | {eval_split} | {runtime} | {psnr} | {ssim} | {coverage} | {ate} | {rot} |".format(
                 config=result.get("config", ""),
                 status=result.get("status", ""),
                 views=result.get("view_count", ""),
+                eval_split=metrics.get("render_eval_split", ""),
                 runtime=format_float(result.get("runtime_seconds")),
                 psnr=format_float(values["render_psnr_db"]),
                 ssim=format_float(values["render_ssim"]),
@@ -2060,6 +2519,7 @@ def main() -> None:
                     "label": prepared.entry.get("label"),
                     "status": "prepared",
                     "view_count": len(prepared.view_specs),
+                    "holdout_view_count": len(prepared.holdout_view_specs),
                     "input_manifest": str(prepared.manifest_path.resolve()),
                     "output_dir": str(prepared.output_dir.resolve()),
                     "input_stats": prepared.stats,

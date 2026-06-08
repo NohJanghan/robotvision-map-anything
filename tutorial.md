@@ -4,6 +4,8 @@
 COLMAP/MapAnything Task 1-3 산출물로 변환하는 절차를 정리한다. 실행 결과 수치와
 해석은 이 문서에 적지 않고 `result.md`에만 기록한다.
 
+colmap 실행을 위해서 [colmap docker tutorial](colmap_docker_tutorial.md)을 참고한다.
+
 ## 전제
 
 - 작업 디렉터리: `/home/acsl/projects/robotvision-map-anything`
@@ -15,8 +17,8 @@ COLMAP/MapAnything Task 1-3 산출물로 변환하는 절차를 정리한다. �
   - `input/<scene>/depth/`
   - `input/<scene>/confidence/`
 - `<scene>`은 `bike`, `lounge`처럼 run 이름으로도 사용한다.
-- MapAnything과 Docker COLMAP GPU 실행은 Codex sandbox에서 권한 상승이 필요할 수
-  있다.
+- Codex sandbox 안에서는 GPU가 보이지 않을 수 있다. MapAnything과 Docker COLMAP GPU
+  실행은 권한 상승으로 실행한다.
 
 ## 핵심 원칙
 
@@ -32,7 +34,8 @@ COLMAP/MapAnything Task 1-3 산출물로 변환하는 절차를 정리한다. �
 
 ## 1. 환경 확인
 
-GPU와 MapAnything CUDA 인식을 확인한다.
+GPU와 MapAnything CUDA 인식을 확인한다. Codex에서 실행할 때는 두 명령 모두 권한
+상승으로 실행해야 다음 단계에서도 GPU가 잡힌다.
 
 ```bash
 nvidia-smi

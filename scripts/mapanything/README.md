@@ -136,6 +136,7 @@ depth/view_0000.png             # depth visualization
 predicted_poses.json            # 예측 intrinsics / cam2world poses
 reconstruction_points.ply       # point cloud
 reconstruction.glb              # GLB scene, export 실패 시 warning 처리
+reconstruction.rrd              # Rerun recording, rerun reconstruction.rrd로 확인
 renders/*_render.png            # point-splat novel/re-target view rendering
 renders/*_target.png
 renders/*_mask.png
@@ -173,6 +174,11 @@ view의 predicted depth point를 하나의 global point cloud로 합쳐 target p
 렌더링하고, `metrics.render_holdout`에 결과를 저장한다.
 `evaluation.render.min_coverage`보다 coverage가 낮은 pair는 평균 PSNR/SSIM 집계에서
 제외되고, low-coverage pair 수가 summary에 기록된다.
+
+`exports.save_rrd`가 켜져 있으면 각 config 디렉토리에 Rerun recording인
+`reconstruction.rrd`가 저장된다. 이 파일에는 예측 camera pose, pinhole intrinsics,
+RGB image, depth, mask, view별 point cloud가 포함된다. 점군 크기는
+`rrd_point_stride`와 `rrd_max_points_per_view`로 조절한다.
 
 `<run-name>_task2_summary.md`에는 다음 비교가 자동으로 추가된다.
 

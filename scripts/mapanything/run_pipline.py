@@ -1308,6 +1308,36 @@ def write_point_cloud_ply(
     stride: int,
     max_points: int | None,
 ) -> None:
+    points_all, colors_all = collect_point_cloud(
+        predictions=predictions,
+        stride=stride,
+        max_points=max_points,
+    )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fp:
+        fp.write("ply\n")
+        fp.write("format ascii 1.0\n")
+        fp.write(f"element vertex {len(points_all)}\n")
+        fp.write("property float x\n")
+        fp.write("property float y\n")
+        fp.write("property float z\n")
+        fp.write("property uchar red\n")
+        fp.write("property uchar green\n")
+        fp.write("property uchar blue\n")
+        fp.write("end_header\n")
+        for point, color in zip(points_all, colors_all):
+            fp.write(
+                f"{point[0]:.7f} {point[1]:.7f} {point[2]:.7f} "
+                f"{int(color[0])} {int(color[1])} {int(color[2])}\n"
+            )
+
+
+def collect_point_cloud(
+    predictions: list[PredictionData],
+    stride: int,
+    max_points: int | None,
+) -> tuple[np.ndarray, np.ndarray]:
     stride = max(1, int(stride))
     point_chunks: list[np.ndarray] = []
     color_chunks: list[np.ndarray] = []
@@ -1332,23 +1362,89 @@ def write_point_cloud_ply(
         points_all = points_all[indices]
         colors_all = colors_all[indices]
 
+    return points_all, colors_all
+
+
+def write_rerun_rrd(
+    predictions: list[PredictionData],
+    path: Path,
+    export_config: dict[str, Any],
+    recording_id: str,
+) -> None:
+    try:
+        import rerun as rr
+    except ImportError as exc:
+        raise RuntimeError(
+            "rerun-sdk is required for exports.save_rrd. Install MapAnything "
+            "dependencies in the rkv-mapanything environment."
+        ) from exc
+
+    point_stride = int(
+        export_config.get("rrd_point_stride", export_config.get("point_cloud_stride", 4))
+    )
+    max_points_per_view = export_config.get("rrd_max_points_per_view")
+    image_plane_distance = float(export_config.get("rrd_image_plane_distance", 0.1))
+    log_depth = bool(export_config.get("rrd_log_depth", True))
+    log_masks = bool(export_config.get("rrd_log_masks", True))
+    log_point_clouds = bool(export_config.get("rrd_log_point_clouds", True))
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fp:
-        fp.write("ply\n")
-        fp.write("format ascii 1.0\n")
-        fp.write(f"element vertex {len(points_all)}\n")
-        fp.write("property float x\n")
-        fp.write("property float y\n")
-        fp.write("property float z\n")
-        fp.write("property uchar red\n")
-        fp.write("property uchar green\n")
-        fp.write("property uchar blue\n")
-        fp.write("end_header\n")
-        for point, color in zip(points_all, colors_all):
-            fp.write(
-                f"{point[0]:.7f} {point[1]:.7f} {point[2]:.7f} "
-                f"{int(color[0])} {int(color[1])} {int(color[2])}\n"
+    rr.init("mapanything_task2", recording_id=recording_id, spawn=False)
+    rr.save(str(path))
+    rr.log("mapanything", rr.ViewCoordinates.RDF, static=True)
+
+    for index, pred in enumerate(predictions):
+        view_name = f"view_{index:04d}"
+        base_name = f"mapanything/{view_name}"
+        height, width = pred.image_uint8.shape[:2]
+
+        rr.log(
+            base_name,
+            rr.Transform3D(
+                translation=pred.camera_pose[:3, 3],
+                mat3x3=pred.camera_pose[:3, :3],
+            ),
+            static=True,
+        )
+        rr.log(
+            f"{base_name}/pinhole",
+            rr.Pinhole(
+                image_from_camera=pred.intrinsics,
+                height=height,
+                width=width,
+                camera_xyz=rr.ViewCoordinates.RDF,
+                image_plane_distance=image_plane_distance,
+            ),
+            static=True,
+        )
+        rr.log(f"{base_name}/pinhole/rgb", rr.Image(pred.image_uint8), static=True)
+
+        if log_depth:
+            rr.log(
+                f"{base_name}/pinhole/depth",
+                rr.DepthImage(pred.depth_z),
+                static=True,
             )
+        if log_masks:
+            rr.log(
+                f"{base_name}/pinhole/mask",
+                rr.SegmentationImage(pred.mask.astype(np.uint8)),
+                static=True,
+            )
+        if log_point_clouds:
+            points, colors = collect_point_cloud(
+                predictions=[pred],
+                stride=point_stride,
+                max_points=max_points_per_view,
+            )
+            rr.log(
+                f"mapanything/pointcloud_{view_name}",
+                rr.Points3D(positions=points, colors=colors),
+                static=True,
+            )
+
+    if hasattr(rr, "disconnect"):
+        rr.disconnect()
 
 
 def export_optional_artifacts(
@@ -1390,6 +1486,24 @@ def export_optional_artifacts(
             paths["glb"] = str(glb_path.resolve())
         except Exception as exc:  # noqa: BLE001 - keep long GPU runs from being wasted.
             message = f"GLB export failed: {exc}"
+            warnings.append(message)
+            if not export_config.get("continue_on_export_error", True):
+                raise
+
+    if export_config.get("save_rrd", False):
+        try:
+            rrd_path = prepared.output_dir / str(
+                export_config.get("rrd_filename", "reconstruction.rrd")
+            )
+            write_rerun_rrd(
+                predictions=predictions,
+                path=rrd_path,
+                export_config=export_config,
+                recording_id=f"{config.get('run_name')}_{prepared.entry.get('id')}",
+            )
+            paths["rrd"] = str(rrd_path.resolve())
+        except Exception as exc:  # noqa: BLE001
+            message = f"Rerun RRD export failed: {exc}"
             warnings.append(message)
             if not export_config.get("continue_on_export_error", True):
                 raise
@@ -2254,8 +2368,9 @@ def task2_coverage_review(config: dict[str, Any], results: list[dict[str, Any]])
         {
             "name": "Reconstruction artifacts",
             "passed": bool(config.get("exports", {}).get("save_point_cloud_ply", True))
-            or bool(config.get("exports", {}).get("save_glb", True)),
-            "detail": "PLY/GLB reconstruction outputs are configured.",
+            or bool(config.get("exports", {}).get("save_glb", True))
+            or bool(config.get("exports", {}).get("save_rrd", False)),
+            "detail": "PLY/GLB/RRD reconstruction outputs are configured.",
         },
         {
             "name": "Required configs completed",

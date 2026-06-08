@@ -791,8 +791,46 @@ def pose_for_name(
     fail(f"unsupported pose source: {source}")
 
 
+def effective_holdout_sources(
+    entry: dict[str, Any],
+    evaluation_config: dict[str, Any],
+    holdout_config: dict[str, Any],
+) -> tuple[str, str, bool]:
+    entry_pose_source = str(entry.get("pose_source", "none")).lower()
+    if entry_pose_source in {"none", "", "null"}:
+        pose_source = str(
+            holdout_config.get(
+                "pose_source",
+                evaluation_config.get("reference_pose_source", "colmap"),
+            )
+        )
+    else:
+        pose_source = entry_pose_source
+    pose_source = str(entry.get("holdout_pose_source", pose_source)).lower()
+
+    if bool(entry.get("use_intrinsics", False)):
+        intrinsics_source = str(entry.get("intrinsics_source", "colmap"))
+    else:
+        intrinsics_source = str(
+            holdout_config.get(
+                "intrinsics_source",
+                evaluation_config.get("reference_intrinsics_source", "colmap"),
+            )
+        )
+    intrinsics_source = str(entry.get("holdout_intrinsics_source", intrinsics_source))
+
+    pose_metric_scale = bool(
+        entry.get(
+            "holdout_pose_metric_scale",
+            entry.get("pose_metric_scale", pose_source == "ar"),
+        )
+    )
+    return pose_source, intrinsics_source, pose_metric_scale
+
+
 def prepare_holdout_view_specs(
     config: dict[str, Any],
+    entry: dict[str, Any],
     image_paths: dict[str, Path],
     colmap_model: ColmapModel | None,
     ar_table: PoseTable | None,
@@ -803,14 +841,10 @@ def prepare_holdout_view_specs(
     if not evaluation_config.get("enabled", True) or not holdout_config.get("enabled", False):
         return [], {"enabled": False}
 
-    pose_source = str(
-        holdout_config.get("pose_source", evaluation_config.get("reference_pose_source", "colmap"))
-    )
-    intrinsics_source = str(
-        holdout_config.get(
-            "intrinsics_source",
-            evaluation_config.get("reference_intrinsics_source", "colmap"),
-        )
+    pose_source, intrinsics_source, pose_metric_scale = effective_holdout_sources(
+        entry=entry,
+        evaluation_config=evaluation_config,
+        holdout_config=holdout_config,
     )
     selected_names = select_image_names(
         image_paths=image_paths,
@@ -835,7 +869,7 @@ def prepare_holdout_view_specs(
                 image_name=name,
                 intrinsics=intrinsics,
                 camera_pose=camera_pose,
-                pose_metric_scale=False,
+                pose_metric_scale=pose_metric_scale,
             )
         )
 
@@ -939,6 +973,7 @@ def prepare_config(
 
     holdout_view_specs, holdout_stats = prepare_holdout_view_specs(
         config=config,
+        entry=entry,
         image_paths=image_paths,
         colmap_model=colmap_model,
         ar_table=ar_table,
@@ -1035,6 +1070,7 @@ def load_runtime() -> dict[str, Any]:
             "rkv-mapanything and install third_party/map-anything with `pip install -e .`. "
             f"Original error: {exc}"
         )
+    configure_torch_hub_cache(torch)
     return {
         "torch": torch,
         "Image": Image,
@@ -1046,6 +1082,32 @@ def load_runtime() -> dict[str, Any]:
         "rgb": rgb,
         "predictions_to_glb": predictions_to_glb,
     }
+
+
+def configure_torch_hub_cache(torch: Any) -> None:
+    if getattr(torch.hub.load, "_mapanything_cache_patch", False):
+        return
+    dinov2_repo_env = os.environ.get("MAPANYTHING_DINOV2_LOCAL_REPO")
+    dinov2_repo = (
+        Path(dinov2_repo_env)
+        if dinov2_repo_env
+        else Path(torch.hub.get_dir()) / "facebookresearch_dinov2_main"
+    )
+    if not (dinov2_repo / "hubconf.py").exists():
+        return
+
+    original_load = torch.hub.load
+
+    def load_with_local_dinov2(repo_or_dir: str, model: str, *args: Any, **kwargs: Any) -> Any:
+        if repo_or_dir == "facebookresearch/dinov2":
+            local_kwargs = dict(kwargs)
+            local_kwargs["source"] = "local"
+            return original_load(str(dinov2_repo), model, *args, **local_kwargs)
+        return original_load(repo_or_dir, model, *args, **kwargs)
+
+    load_with_local_dinov2._mapanything_cache_patch = True  # type: ignore[attr-defined]
+    torch.hub.load = load_with_local_dinov2
+    print(f"Using cached DINOv2 torch hub repo: {dinov2_repo}")
 
 
 def load_model(runtime: dict[str, Any], model_config: dict[str, Any]) -> tuple[Any, Any, str]:
@@ -2011,7 +2073,13 @@ def evaluate_holdout_rendering(
         return {"available": False, "reason": "no materialized holdout targets"}
 
     pose_source = str(
-        holdout_config.get("pose_source", evaluation_config.get("reference_pose_source", "colmap"))
+        prepared.stats.get("holdout", {}).get(
+            "pose_source",
+            holdout_config.get(
+                "pose_source",
+                evaluation_config.get("reference_pose_source", "colmap"),
+            ),
+        )
     )
     reference_poses = reference_pose_table(pose_source, colmap_model, ar_table)
     aligned_predictions, alignment = align_predictions_to_reference(predictions, reference_poses)
@@ -2113,6 +2181,7 @@ def evaluate_holdout_rendering(
         "source_strategy": str(
             holdout_config.get("source_strategy", "global_point_cloud")
         ),
+        "pose_source": pose_source,
         "pairs": pair_metrics,
         "alignment": alignment,
         "psnr_db_mean": None if not psnr_values else float(np.mean(psnr_values)),
@@ -2579,6 +2648,44 @@ def format_delta(value: Any) -> str:
     return f"{number:+.4f}"
 
 
+def merge_existing_summary_results(
+    output_root: Path,
+    run_name: str,
+    results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    summary_path = output_root / f"{run_name}_task2_summary.json"
+    if not summary_path.exists():
+        return results
+    try:
+        existing = read_json(summary_path)
+    except SystemExit:
+        return results
+    existing_results = existing.get("results", [])
+    if not isinstance(existing_results, list):
+        return results
+
+    updated_ids = {str(result.get("config")) for result in results}
+    merged = [
+        result
+        for result in existing_results
+        if str(result.get("config")) not in updated_ids
+    ]
+    merged.extend(results)
+    config_order = {
+        "config_a": 0,
+        "config_b": 1,
+        "config_c": 2,
+        "config_d": 3,
+    }
+    return sorted(
+        merged,
+        key=lambda result: (
+            config_order.get(str(result.get("config")), 999),
+            str(result.get("config")),
+        ),
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.dry_run:
@@ -2679,12 +2786,18 @@ def main() -> None:
                 results.append(failure)
                 write_json(prepared.output_dir / "metrics" / "failure.json", failure)
                 if not config.get("continue_on_error", False):
-                    summary = build_summary(config, config_path, results, model_name, warnings)
+                    summary_results = merge_existing_summary_results(
+                        output_root,
+                        run_name,
+                        results,
+                    )
+                    summary = build_summary(config, config_path, summary_results, model_name, warnings)
                     write_summaries(output_root, run_name, summary)
                     raise
                 print(f"Failed {prepared.entry.get('id')}: {exc}", file=sys.stderr)
 
-    summary = build_summary(config, config_path, results, model_name, warnings)
+    summary_results = merge_existing_summary_results(output_root, run_name, results)
+    summary = build_summary(config, config_path, summary_results, model_name, warnings)
     write_summaries(output_root, run_name, summary)
     print("\nTask 2 pipeline complete")
     print(f"summary JSON: {output_root / f'{run_name}_task2_summary.json'}")
